@@ -1,6 +1,6 @@
 {
   "title": "仙林校区无人机适航评估平台",
-  "campusCenter": { "lng": 118.956833, "lat": 32.111583, "height": 1200 },
+  "campusCenter": { "lng": 118.944736, "lat": 32.107470, "height": 600 },
   "tileset3d": {
     "url": "./3dtiles/tileset.json",
     "enabled": true,
@@ -18,7 +18,9 @@
   },
   "droneModel": {
     "url": "./Models/parrot_camo_drone.glb",
-    "minimumPixelSize": 64
+    "minimumPixelSize": 64,
+    "scale": 8,
+    "headingOffset": 90
   },
   "terrain": {
     "enabled": true,

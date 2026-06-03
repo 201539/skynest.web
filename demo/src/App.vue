@@ -141,27 +141,29 @@ const DEFAULT_ROUTES = [
   {
     id: 'xianlin-demo-1',
     name: '仙林校区示范航线 A',
-    description: '沿仙林校区北部低空巡检',
-    duration: 30,
+    description: '自西向东横穿仙林校区北部',
+    duration: 50,
     points: [
-      { lng: 118.950023, lat: 32.121583, height: 128 },
-      { lng: 118.950023, lat: 32.122583, height: 133 },
-      { lng: 118.950023, lat: 32.123583, height: 80 },
-      { lng: 118.950023, lat: 32.124583, height: 128 },
-      { lng: 118.950023, lat: 32.124583, height: 127 },
+      { lng: 118.942000, lat: 32.118000, height: 130 },
+      { lng: 118.946000, lat: 32.119500, height: 125 },
+      { lng: 118.950000, lat: 32.121000, height: 120 },
+      { lng: 118.954000, lat: 32.120000, height: 115 },
+      { lng: 118.958000, lat: 32.118500, height: 125 },
+      { lng: 118.962000, lat: 32.117000, height: 130 },
     ],
   },
   {
     id: 'xianlin-demo-2',
     name: '仙林校区示范航线 B',
-    description: '横穿校区中部适航评估区',
-    duration: 45,
+    description: '斜穿校区中部适航评估区',
+    duration: 55,
     points: [
-      { lng: 118.944736, lat: 32.107470, height: 120 },
-      { lng: 118.948000, lat: 32.110000, height: 130 },
-      { lng: 118.952000, lat: 32.113000, height: 100 },
-      { lng: 118.956833, lat: 32.111583, height: 125 },
-      { lng: 118.960000, lat: 32.115000, height: 110 },
+      { lng: 118.942500, lat: 32.106000, height: 120 },
+      { lng: 118.946500, lat: 32.108500, height: 125 },
+      { lng: 118.950500, lat: 32.110500, height: 110 },
+      { lng: 118.954500, lat: 32.112000, height: 130 },
+      { lng: 118.958500, lat: 32.113500, height: 115 },
+      { lng: 118.962500, lat: 32.115000, height: 125 },
     ],
   },
 ]
@@ -618,18 +620,70 @@ async function setupFallbackModel() {
   }
 }
 
-function buildSplineFromRoute(route) {
-  const points = route.points.map((p) =>
-    Cesium.Cartesian3.fromDegrees(p.lng, p.lat, p.height)
-  )
-  const n = points.length
-  const times = points.map((_, i) => i / (n - 1))
-  return new Cesium.CatmullRomSpline({
-    times,
-    points,
-    firstTangent: Cesium.Cartesian3.ZERO,
-    lastTangent: Cesium.Cartesian3.ZERO,
-  })
+function buildFlightPathFromRoute(route) {
+  const points = route.points
+  if (points.length < 2) return { positions: [], totalLength: 0 }
+
+  const positions = []
+  let totalLength = 0
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]
+    const b = points[i + 1]
+    const start = Cesium.Cartesian3.fromDegrees(a.lng, a.lat, a.height)
+    const end = Cesium.Cartesian3.fromDegrees(b.lng, b.lat, b.height)
+    const segLen = Cesium.Cartesian3.distance(start, end)
+    totalLength += segLen
+    const steps = Math.max(10, Math.ceil(segLen / 12))
+
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps
+      positions.push(
+        Cesium.Cartesian3.fromDegrees(
+          a.lng + (b.lng - a.lng) * t,
+          a.lat + (b.lat - a.lat) * t,
+          a.height + (b.height - a.height) * t,
+        ),
+      )
+    }
+  }
+
+  const last = points[points.length - 1]
+  positions.push(Cesium.Cartesian3.fromDegrees(last.lng, last.lat, last.height))
+  return { positions, totalLength }
+}
+
+function createLevelFlightOrientation(positionProperty, headingOffset = 0) {
+  const scratchNext = new Cesium.JulianDate()
+  return new Cesium.CallbackProperty((time, result) => {
+    const pos = positionProperty.getValue(time)
+    if (!pos) {
+      return Cesium.Quaternion.clone(Cesium.Quaternion.IDENTITY, result)
+    }
+
+    const nextTime = Cesium.JulianDate.addSeconds(time, 0.3, scratchNext)
+    const nextPos = positionProperty.getValue(nextTime)
+
+    let heading = headingOffset
+    if (nextPos) {
+      const transform = Cesium.Transforms.eastNorthUpToFixedFrame(pos)
+      const invTransform = Cesium.Matrix4.inverse(transform, new Cesium.Matrix4())
+      const delta = Cesium.Cartesian3.subtract(nextPos, pos, new Cesium.Cartesian3())
+      const local = Cesium.Matrix4.multiplyByPointAsVector(invTransform, delta, new Cesium.Cartesian3())
+      const horizontal = Math.sqrt(local.x * local.x + local.y * local.y)
+      if (horizontal > 0.05) {
+        heading = Math.atan2(local.x, local.y) + headingOffset
+      }
+    }
+
+    return Cesium.Transforms.headingPitchRollQuaternion(
+      pos,
+      new Cesium.HeadingPitchRoll(heading, 0, 0),
+      Cesium.Ellipsoid.WGS84,
+      Cesium.Transforms.eastNorthUpToFixedFrame,
+      result,
+    )
+  }, false)
 }
 
 function clearFlightEntities() {
@@ -648,21 +702,18 @@ async function loadSelectedRoute() {
   if (!route || !viewer) return
   clearFlightEntities()
 
-  const spline = buildSplineFromRoute(route)
+  const pathData = buildFlightPathFromRoute(route)
+  if (pathData.positions.length < 2) return
 
   routePolylineEntity = viewer.entities.add({
     name: route.name,
     show: layers.route,
     polyline: {
-      positions: new Cesium.CallbackProperty(() => {
-        const positions = []
-        for (let i = 0; i <= 100; i++) positions.push(spline.evaluate(i / 100))
-        return positions
-      }, false),
+      positions: pathData.positions,
       width: 4,
       material: new Cesium.PolylineGlowMaterialProperty({
         glowPower: 0.25,
-        color: Cesium.Color.CYAN,
+        color: Cesium.Color.YELLOW,
       }),
     },
   })
@@ -670,13 +721,18 @@ async function loadSelectedRoute() {
   const start = route.points[0]
   const droneCfg = appConfig.droneModel || {}
   const droneUrl = droneCfg.url || './Models/parrot_camo_drone.glb'
+  const headingOffset = Cesium.Math.toRadians(droneCfg.headingOffset || 0)
   const hasDroneModel = await assetExists(droneUrl)
 
   if (hasDroneModel) {
     droneEntity = viewer.entities.add({
       name: '无人机',
       show: layers.drone,
-      model: { uri: droneUrl, minimumPixelSize: droneCfg.minimumPixelSize || 64 },
+      model: {
+        uri: droneUrl,
+        minimumPixelSize: droneCfg.minimumPixelSize || 64,
+        scale: droneCfg.scale || 1,
+      },
     })
   } else {
     droneEntity = viewer.entities.add({
@@ -698,9 +754,21 @@ async function loadSelectedRoute() {
     })
   }
 
-  startFlightAnimation(route, spline)
-  showStatus(`已加载航线：${route.name}`)
+  startFlightAnimation(route, pathData, headingOffset)
+  const lenKm = (pathData.totalLength / 1000).toFixed(2)
+  showStatus(`已加载航线：${route.name}（约 ${lenKm} km），动画播放中`)
   evaluateCurrentRoute()
+
+  // 加载航线后把视角移到航线附近，便于看到无人机飞行
+  const sphere = Cesium.BoundingSphere.fromPoints(pathData.positions)
+  viewer.camera.flyToBoundingSphere(sphere, {
+    duration: 1.5,
+    offset: new Cesium.HeadingPitchRange(
+      Cesium.Math.toRadians(30),
+      Cesium.Math.toRadians(-30),
+      Math.max(pathData.totalLength * 1.8, 800),
+    ),
+  })
 }
 
 async function evaluateCurrentRoute() {
@@ -722,38 +790,87 @@ async function evaluateCurrentRoute() {
   }
 }
 
-function startFlightAnimation(route, spline) {
+function startFlightAnimation(route, pathData, headingOffset = 0) {
+  const { positions, totalLength } = pathData
+  if (positions.length < 2 || totalLength <= 0) return
+
   const duration = route.duration || 30
   const startTime = Cesium.JulianDate.now()
   const stopTime = Cesium.JulianDate.addSeconds(startTime, duration, new Cesium.JulianDate())
   const positionProperty = new Cesium.SampledPositionProperty()
+  positionProperty.setInterpolationOptions({
+    interpolationDegree: 1,
+    interpolationAlgorithm: Cesium.LinearApproximation,
+  })
 
-  for (let i = 0; i <= 100; i++) {
-    const t = i / 100
+  positionProperty.addSample(startTime, positions[0])
+  let accumulated = 0
+  for (let i = 1; i < positions.length; i++) {
+    accumulated += Cesium.Cartesian3.distance(positions[i - 1], positions[i])
+    const t = accumulated / totalLength
     const time = Cesium.JulianDate.addSeconds(startTime, t * duration, new Cesium.JulianDate())
-    positionProperty.addSample(time, spline.evaluate(t))
+    positionProperty.addSample(time, positions[i])
   }
 
   droneEntity.position = positionProperty
-  droneEntity.orientation = new Cesium.VelocityOrientationProperty(positionProperty)
-  viewer.clock.startTime = startTime.clone()
-  viewer.clock.stopTime = stopTime.clone()
-  viewer.clock.currentTime = startTime.clone()
-  viewer.clock.clockRange = Cesium.ClockRange.LOOP_STOP
+  droneEntity.orientation = createLevelFlightOrientation(positionProperty, headingOffset)
+
+  const clock = viewer.clock
+  clock.startTime = startTime.clone()
+  clock.stopTime = stopTime.clone()
+  clock.currentTime = startTime.clone()
+  clock.clockRange = Cesium.ClockRange.LOOP_STOP
+  clock.multiplier = 1
+  clock.shouldAnimate = true
   viewer.timeline.zoomTo(startTime, stopTime)
 }
 
 function replayFlight() {
-  if (currentRoute.value) loadSelectedRoute()
+  if (!viewer || !currentRoute.value) return
+  if (droneEntity && viewer.clock.startTime) {
+    viewer.clock.currentTime = viewer.clock.startTime.clone()
+    viewer.clock.shouldAnimate = true
+    showStatus(`重播航线：${currentRoute.value.name}`)
+    return
+  }
+  loadSelectedRoute()
 }
 
 function flyToCampus() {
-  const c = appConfig.campusCenter || { lng: 118.956833, lat: 32.111583, height: 1200 }
+  if (!viewer) return
+
+  const flyOpts = {
+    duration: 2,
+    offset: new Cesium.HeadingPitchRange(
+      Cesium.Math.toRadians(30),
+      Cesium.Math.toRadians(-28),
+      1400,
+    ),
+  }
+
+  if (tileset3d?.show) {
+    viewer.flyTo(tileset3d, flyOpts)
+    return
+  }
+
+  if (fallbackModelEntity?.show) {
+    viewer.flyTo(fallbackModelEntity, flyOpts)
+    return
+  }
+
+  if (campusBuildingsDs?.show) {
+    viewer.flyTo(campusBuildingsDs, flyOpts)
+    return
+  }
+
+  const pos = appConfig.fallbackModel?.position
+    || appConfig.campusCenter
+    || { lng: 118.944736, lat: 32.107470, height: 0 }
   viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(c.lng, c.lat, c.height || 1200),
+    destination: Cesium.Cartesian3.fromDegrees(pos.lng, pos.lat, 600),
     orientation: {
-      heading: Cesium.Math.toRadians(25),
-      pitch: Cesium.Math.toRadians(-40),
+      heading: Cesium.Math.toRadians(30),
+      pitch: Cesium.Math.toRadians(-28),
       roll: 0,
     },
     duration: 2,
@@ -962,9 +1079,11 @@ onMounted(async () => {
   }
 
   if (selectedFile.value) await loadAndShow(selectedFile.value)
-  if (currentRoute.value) await loadSelectedRoute()
-
-  flyToCampus()
+  if (currentRoute.value) {
+    await loadSelectedRoute()
+  } else {
+    flyToCampus()
+  }
 
   cameraMoveHandler = viewer.camera.moveEnd.addEventListener(scheduleGridReload)
   if (layers.grid) await reloadGridsInView()
