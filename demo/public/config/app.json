@@ -1,0 +1,37 @@
+{
+  "title": "仙林校区无人机适航评估平台",
+  "campusCenter": { "lng": 118.956833, "lat": 32.111583, "height": 1200 },
+  "tileset3d": {
+    "url": "./3dtiles/tileset.json",
+    "enabled": true,
+    "maximumScreenSpaceError": 16,
+    "heightOffset": 0
+  },
+  "fallbackModel": {
+    "url": "./Models/campus-model2.glb",
+    "position": { "lng": 118.944736, "lat": 32.107470, "height": 0 },
+    "scale": 100
+  },
+  "campusBuildings": {
+    "enabled": true,
+    "url": "./data/campus-buildings.geojson"
+  },
+  "droneModel": {
+    "url": "./Models/parrot_camo_drone.glb",
+    "minimumPixelSize": 64
+  },
+  "terrain": {
+    "enabled": true,
+    "url": "./terrain"
+  },
+  "grid": {
+    "groundHeight": 55,
+    "alpha": 0.7,
+    "bboxLimit": 8000,
+    "loadOnCameraMove": true,
+    "zMin": 0,
+    "zMax": 200,
+    "useDemoWhenOffline": true
+  },
+  "apiBase": "/api"
+}

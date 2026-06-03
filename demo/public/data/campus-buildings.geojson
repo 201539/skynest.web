@@ -1,0 +1,102 @@
+{
+  "type": "FeatureCollection",
+  "name": "仙林校区简易建筑",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "敬文学院", "height": 28, "color": "#8ea4c0" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9528, 32.1102], [118.9538, 32.1102], [118.9538, 32.1110], [118.9528, 32.1110], [118.9528, 32.1102]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "图书馆", "height": 42, "color": "#7a9ec8" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9550, 32.1095], [118.9568, 32.1095], [118.9568, 32.1108], [118.9550, 32.1108], [118.9550, 32.1095]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "方肇周体育馆", "height": 22, "color": "#9ab0c8" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9585, 32.1088], [118.9602, 32.1088], [118.9602, 32.1100], [118.9585, 32.1100], [118.9585, 32.1088]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "学生公寓区 A", "height": 35, "color": "#a8b8cc" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9480, 32.1125], [118.9505, 32.1125], [118.9505, 32.1145], [118.9480, 32.1145], [118.9480, 32.1125]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "学生公寓区 B", "height": 35, "color": "#a8b8cc" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9510, 32.1130], [118.9535, 32.1130], [118.9535, 32.1150], [118.9510, 32.1150], [118.9510, 32.1130]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "理科楼群", "height": 30, "color": "#849ab8" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9540, 32.1115], [118.9560, 32.1115], [118.9560, 32.1130], [118.9540, 32.1130], [118.9540, 32.1115]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "文科楼群", "height": 26, "color": "#8ea0b8" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9565, 32.1118], [118.9585, 32.1118], [118.9585, 32.1132], [118.9565, 32.1132], [118.9565, 32.1118]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "行政楼", "height": 24, "color": "#7890a8" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9530, 32.1080], [118.9545, 32.1080], [118.9545, 32.1092], [118.9530, 32.1092], [118.9530, 32.1080]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "食堂", "height": 18, "color": "#b0c0d0" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9495, 32.1108], [118.9508, 32.1108], [118.9508, 32.1118], [118.9495, 32.1118], [118.9495, 32.1108]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "实验中心", "height": 32, "color": "#7c94b0" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9570, 32.1098], [118.9590, 32.1098], [118.9590, 32.1112], [118.9570, 32.1112], [118.9570, 32.1098]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "北门广场", "height": 8, "color": "#c8d4e0" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9520, 32.1160], [118.9540, 32.1160], [118.9540, 32.1175], [118.9520, 32.1175], [118.9520, 32.1160]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "南门入口", "height": 6, "color": "#c8d4e0" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[118.9555, 32.1065], [118.9575, 32.1065], [118.9575, 32.1078], [118.9555, 32.1078], [118.9555, 32.1065]]]
+      }
+    }
+  ]
+}
