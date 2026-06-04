@@ -1,6 +1,6 @@
 {
   "title": "仙林校区无人机适航评估平台",
-  "campusCenter": { "lng": 118.944736, "lat": 32.107470, "height": 600 },
+  "campusCenter": { "lng": 118.944736, "lat": 32.107470, "height": 480 },
   "tileset3d": {
     "url": "./3dtiles/tileset.json",
     "enabled": true,
@@ -10,16 +10,18 @@
   "fallbackModel": {
     "url": "./Models/campus-model2.glb",
     "position": { "lng": 118.944736, "lat": 32.107470, "height": 0 },
-    "scale": 100
+    "scale": 100,
+    "enabled": true
   },
   "campusBuildings": {
-    "enabled": true,
+    "enabled": false,
     "url": "./data/campus-buildings.geojson"
   },
   "droneModel": {
     "url": "./Models/parrot_camo_drone.glb",
-    "minimumPixelSize": 64,
-    "scale": 8,
+    "minimumPixelSize": 32,
+    "scale": 2,
+    "maximumScale": 120,
     "headingOffset": 90
   },
   "terrain": {
@@ -28,12 +30,41 @@
   },
   "grid": {
     "groundHeight": 55,
-    "alpha": 0.7,
-    "bboxLimit": 8000,
+    "alpha": 0.85,
+    "bboxLimit": 5000,
     "loadOnCameraMove": true,
     "zMin": 0,
     "zMax": 200,
-    "useDemoWhenOffline": true
+    "useDemoWhenOffline": true,
+    "showOutlines": false,
+    "flightLayerOnly": true,
+    "flightHeight": 80,
+    "layerTolerance": 20,
+    "minBoxHeight": 6
+  },
+  "defaultLayers": {
+    "terrain": true,
+    "tileset": true,
+    "fallbackModel": true,
+    "buildings": false,
+    "heatmap": false,
+    "grid": true,
+    "route": false,
+    "drone": true
+  },
+  "routePlan": {
+    "placesUrl": "./data/places.json",
+    "defaultFlightHeight": 80,
+    "alignToModel": true,
+    "placeCoordinateMode": "modelLocalMeters",
+    "searchBbox": {
+      "minPad": 0.002,
+      "ratio": 0.3
+    },
+    "minScore": 0.25,
+    "gridSize": 48,
+    "simplifyToleranceMeters": 8,
+    "showSearchBbox": true
   },
   "apiBase": "/api"
 }

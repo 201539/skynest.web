@@ -1,0 +1,98 @@
+[
+  {
+    "name": "敬文学院",
+    "eastMeters": 790,
+    "northMeters": 915,
+    "height": 80,
+    "upMeters": 26.1,
+    "surfaceHeight": 26
+  },
+  {
+    "name": "图书馆",
+    "eastMeters": 970,
+    "northMeters": 939,
+    "height": 80,
+    "upMeters": 15.8,
+    "surfaceHeight": 16
+  },
+  {
+    "name": "方肇周体育馆",
+    "eastMeters": 609,
+    "northMeters": 783,
+    "height": 80,
+    "upMeters": 20.3,
+    "surfaceHeight": 20
+  },
+  {
+    "name": "学生公寓区 A",
+    "eastMeters": 427,
+    "northMeters": 1057,
+    "height": 80,
+    "upMeters": 21.8,
+    "surfaceHeight": 22
+  },
+  {
+    "name": "学生公寓区 B",
+    "eastMeters": 352,
+    "northMeters": 1997,
+    "height": 80,
+    "upMeters": -0.4,
+    "surfaceHeight": 0
+  },
+  {
+    "name": "理科楼群",
+    "eastMeters": 272,
+    "northMeters": 1416,
+    "height": 80,
+    "upMeters": 22.4,
+    "surfaceHeight": 23
+  },
+  {
+    "name": "文科楼群",
+    "eastMeters": 940,
+    "northMeters": 1216,
+    "height": 80,
+    "upMeters": 14.8,
+    "surfaceHeight": 15
+  },
+  {
+    "name": "行政楼",
+    "eastMeters": 1231,
+    "northMeters": 816,
+    "height": 80,
+    "upMeters": 32.4,
+    "surfaceHeight": 33
+  },
+  {
+    "name": "食堂",
+    "eastMeters": 521,
+    "northMeters": 655,
+    "height": 80,
+    "upMeters": 17.7,
+    "surfaceHeight": 18
+  },
+  {
+    "name": "实验中心",
+    "eastMeters": 211,
+    "northMeters": 1930,
+    "height": 80,
+    "upMeters": 13.1,
+    "surfaceHeight": 13
+  },
+  {
+    "name": "北门广场",
+    "eastMeters": 267,
+    "northMeters": 1806,
+    "height": 80,
+    "upMeters": 22.9,
+    "surfaceHeight": 23
+  },
+  {
+    "name": "南门入口",
+    "eastMeters": 1083,
+    "northMeters": 569,
+    "height": 80,
+    "upMeters": 8.5,
+    "surfaceHeight": 9
+  }
+]

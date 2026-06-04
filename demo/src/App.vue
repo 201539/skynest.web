@@ -1,5 +1,5 @@
 <template>
-  <div id="cesiumContainer"></div>
+  <div id="cesiumContainer" :class="{ 'pick-mode': pickModeActive }"></div>
 
   <header class="platform-header">
     <div class="header-title">{{ appConfig.title || '仙林校区无人机适航评估平台' }}</div>
@@ -44,16 +44,98 @@
     </section>
 
     <section class="panel-section">
+      <h3>智能航线规划</h3>
+      <label class="field-label">起点建筑</label>
+      <select v-model="planStartName" class="full-width">
+        <option v-if="!campusPlaces.length" disabled value="">加载建筑列表中...</option>
+        <option v-for="p in campusPlaces" :key="'s-' + p.name" :value="p.name">{{ p.name }}</option>
+      </select>
+      <label class="field-label">终点建筑</label>
+      <select v-model="planEndName" class="full-width">
+        <option v-if="!campusPlaces.length" disabled value="">加载建筑列表中...</option>
+        <option v-for="p in campusPlaces" :key="'e-' + p.name" :value="p.name">{{ p.name }}</option>
+      </select>
+      <p v-if="planStartPlace && planEndPlace" class="hint">
+        起点 {{ planStartPlace.lng.toFixed(5) }}, {{ planStartPlace.lat.toFixed(5) }} ·
+        高度 {{ planFlightHeight }}m
+        <span v-if="planStartPlace.eastMeters != null">
+          （相对白模锚点 E{{ Math.round(planStartPlace.eastMeters) }}m N{{ Math.round(planStartPlace.northMeters) }}m）
+        </span>
+      </p>
+      <p v-if="planSearchBboxText" class="hint">局部搜索：{{ planSearchBboxText }}</p>
+      <p v-if="!canPlanRoute && campusPlaces.length" class="hint warn-hint">
+        请选择不同的起点与终点建筑
+      </p>
+      <p v-if="!campusPlaces.length" class="hint warn-hint">建筑列表未加载，请刷新页面</p>
+      <div class="row btn-row">
+        <button type="button" class="plan-btn" @click="planSmartRoute" :disabled="planning || !canPlanRoute">
+          {{ planning ? 'A* 规划中...' : 'A* 生成航线' }}
+        </button>
+        <button type="button" @click="flyToCampus">飞到校区</button>
+      </div>
+      <div v-if="planResult" class="eval-box pass">
+        <div class="eval-title">规划结果</div>
+        <div>算法：{{ planResult.algorithm }} · 航点 {{ planResult.route?.points?.length ?? 0 }} 个</div>
+        <div>航程约 {{ ((planResult.totalLengthMeters || 0) / 1000).toFixed(2) }} km</div>
+        <div v-if="planResult.algorithm === 'A*' && !planResult.fallbackUsed" class="hint">
+          基于适航格网 A* 寻路；开阔区域最优路径可能接近直线
+        </div>
+        <div v-if="planResult.fallbackUsed" class="demo-hint">未找到格网最优路径，已使用直线备选</div>
+        <div v-if="planResult.demo" class="demo-hint">演示格网模式</div>
+      </div>
+    </section>
+
+    <section class="panel-section pick-section" :class="{ active: pickModeActive }">
+      <h3>白模坐标标定</h3>
+      <p class="hint">选建筑 → 开始取点 → 点击白模中心（取点后<strong>自动写入</strong>该建筑）</p>
+      <label class="field-label">标定建筑</label>
+      <select v-model="pickTargetName" class="full-width">
+        <option v-if="!campusPlaces.length" disabled value="">加载建筑列表中...</option>
+        <option v-for="p in campusPlaces" :key="'pick-' + p.name" :value="p.name">{{ p.name }}</option>
+      </select>
+      <div class="row btn-row">
+        <button
+          type="button"
+          class="pick-btn"
+          :class="{ on: pickModeActive }"
+          @click="togglePickMode"
+          :disabled="pickModeLoading"
+        >
+          {{ pickModeLoading ? '准备取点...' : pickModeActive ? '退出取点' : '开始取点' }}
+        </button>
+        <button type="button" @click="() => applyPickToBuilding()" :disabled="!lastPick || !pickTargetName">
+          应用到建筑
+        </button>
+      </div>
+      <div v-if="lastPick" class="eval-box pass pick-result">
+        <div class="eval-title">最近取点</div>
+        <div>WGS84：{{ lastPick.lng.toFixed(6) }}, {{ lastPick.lat.toFixed(6) }}</div>
+        <div>相对白模锚点：E{{ Math.round(lastPick.eastMeters) }}m · N{{ Math.round(lastPick.northMeters) }}m</div>
+        <div v-if="pickTargetName">已写入：{{ pickTargetName }}</div>
+        <div v-if="pickAppliedName" class="demo-hint">✓ 已同步到航线规划坐标</div>
+      </div>
+      <div v-if="pickModeActive" class="hint warn-hint">取点模式：请在右侧白模上点击目标建筑中心（Esc 退出）</div>
+      <div class="row btn-row">
+        <button type="button" class="full-width-btn pick-save-btn" @click="savePlacesToServer" :disabled="placesSaving">
+          {{ placesSaving ? '保存中...' : '保存 places.json 到服务器' }}
+        </button>
+      </div>
+      <p v-if="campusPlaces.length" class="hint">已标定 {{ campusPlaces.length }} 栋 · 保存前请勿关闭页面</p>
+      <button type="button" class="link-btn pick-link" @click="downloadPlacesJson">下载 JSON</button>
+      <button type="button" class="link-btn pick-link" @click="copyPlacesJson">复制 JSON</button>
+    </section>
+
+    <section class="panel-section">
       <h3>飞行航线</h3>
-      <select v-model="selectedRouteId" @change="loadSelectedRoute" class="full-width">
-        <option v-if="!routes.length" disabled value="">暂无航线，请刷新页面</option>
+      <select v-model="selectedRouteId" @change="onRouteSelect" class="full-width">
+        <option value="">— 选择预设航线 —</option>
         <option v-for="r in routes" :key="r.id" :value="r.id">{{ r.name }}</option>
       </select>
       <p v-if="currentRoute" class="route-desc">{{ currentRoute.description }}</p>
       <div class="row btn-row">
-        <button @click="replayFlight">重播</button>
-        <button @click="flyToCampus">飞到校区</button>
-        <button @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
+        <button type="button" @click="replayFlight">重播</button>
+        <button type="button" @click="flyToCampus">飞到校区</button>
+        <button type="button" @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
       </div>
       <div v-if="routeEvaluation" class="eval-box" :class="routeEvaluation.passable ? 'pass' : 'fail'">
         <div class="eval-title">航线适航评估</div>
@@ -86,6 +168,7 @@
       </button>
       <p v-if="gridDemoMode" class="hint demo-hint">演示模式：格网数据未导入，显示校区模拟格网</p>
       <p v-else class="hint">视口内最多 {{ bboxLimit.toLocaleString() }} 条 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
+      <p class="hint">默认显示 80m 飞行高度层 · 彩色立体体块</p>
     </section>
   </aside>
 
@@ -107,7 +190,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import * as Cesium from 'cesium'
 import proj4 from 'proj4'
 
@@ -128,6 +211,12 @@ let fallbackModelEntity = null
 let campusBuildingsDs = null
 let routePolylineEntity = null
 let droneEntity = null
+let searchBboxEntity = null
+let planPreviewEntity = null
+let planMarkerEntities = []
+let routeWaypointEntities = []
+let pickHandler = null
+let pickMarkerEntity = null
 let gridLoadTimer = null
 let dbCheckTimer = null
 let cameraMoveHandler = null
@@ -141,35 +230,31 @@ const DEFAULT_ROUTES = [
   {
     id: 'xianlin-demo-1',
     name: '仙林校区示范航线 A',
-    description: '自西向东横穿仙林校区北部',
-    duration: 50,
+    description: '南门 → 图书馆 → 实验中心 → 体育馆',
+    duration: 45,
     points: [
-      { lng: 118.942000, lat: 32.118000, height: 130 },
-      { lng: 118.946000, lat: 32.119500, height: 125 },
-      { lng: 118.950000, lat: 32.121000, height: 120 },
-      { lng: 118.954000, lat: 32.120000, height: 115 },
-      { lng: 118.958000, lat: 32.118500, height: 125 },
-      { lng: 118.962000, lat: 32.117000, height: 130 },
+      { lng: 118.9490, lat: 32.1068, height: 80 },
+      { lng: 118.9492, lat: 32.1082, height: 80 },
+      { lng: 118.9505, lat: 32.1088, height: 80 },
+      { lng: 118.9515, lat: 32.1078, height: 80 },
     ],
   },
   {
     id: 'xianlin-demo-2',
     name: '仙林校区示范航线 B',
-    description: '斜穿校区中部适航评估区',
-    duration: 55,
+    description: '食堂 → 敬文学院 → 理科楼 → 文科楼',
+    duration: 50,
     points: [
-      { lng: 118.942500, lat: 32.106000, height: 120 },
-      { lng: 118.946500, lat: 32.108500, height: 125 },
-      { lng: 118.950500, lat: 32.110500, height: 110 },
-      { lng: 118.954500, lat: 32.112000, height: 130 },
-      { lng: 118.958500, lat: 32.113500, height: 115 },
-      { lng: 118.962500, lat: 32.115000, height: 125 },
+      { lng: 118.9455, lat: 32.1085, height: 80 },
+      { lng: 118.9468, lat: 32.1088, height: 80 },
+      { lng: 118.9498, lat: 32.1095, height: 80 },
+      { lng: 118.9518, lat: 32.1098, height: 80 },
     ],
   },
 ]
 
 const routes = ref([...DEFAULT_ROUTES])
-const selectedRouteId = ref(DEFAULT_ROUTES[0].id)
+const selectedRouteId = ref('')
 const loadingProgress = ref(0)
 const gridLoading = ref(false)
 const dbConnected = ref(false)
@@ -185,18 +270,926 @@ const gridDemoMode = ref(false)
 const routeEvaluation = ref(null)
 const evaluating = ref(false)
 
+const campusPlaces = ref([])
+const planStartName = ref('')
+const planEndName = ref('')
+const planFlightHeight = ref(80)
+const planning = ref(false)
+const planResult = ref(null)
+const pickModeActive = ref(false)
+const pickModeLoading = ref(false)
+const pickTargetName = ref('')
+const lastPick = ref(null)
+const pickAppliedName = ref('')
+const placesSaving = ref(false)
+let placeLayoutRaw = []
+const PLACES_DRAFT_KEY = 'xianlin-campus-places-draft'
+
+function persistPlacesDraft() {
+  if (!placeLayoutRaw.length) return
+  try {
+    localStorage.setItem(PLACES_DRAFT_KEY, JSON.stringify({
+      places: placeLayoutRaw,
+      updatedAt: new Date().toISOString(),
+    }))
+  } catch (e) {
+    console.warn('标定草稿写入 localStorage 失败', e)
+  }
+}
+
+function loadPlacesDraft() {
+  try {
+    const raw = localStorage.getItem(PLACES_DRAFT_KEY)
+    if (!raw) return null
+    const data = JSON.parse(raw)
+    return Array.isArray(data?.places) && data.places.length ? data : null
+  } catch {
+    return null
+  }
+}
+
+function clearPlacesDraft() {
+  try {
+    localStorage.removeItem(PLACES_DRAFT_KEY)
+  } catch {
+    // ignore
+  }
+}
+
 const layers = reactive({
   terrain: true,
   tileset: true,
   fallbackModel: true,
   buildings: false,
-  heatmap: true,
+  heatmap: false,
   grid: true,
-  route: true,
+  route: false,
   drone: true,
 })
 
 const currentRoute = computed(() => routes.value.find((r) => r.id === selectedRouteId.value))
+
+const planStartPlace = computed(() =>
+  campusPlaces.value.find((p) => p.name === planStartName.value) || null
+)
+const planEndPlace = computed(() =>
+  campusPlaces.value.find((p) => p.name === planEndName.value) || null
+)
+const canPlanRoute = computed(() =>
+  Boolean(
+    planStartName.value &&
+    planEndName.value &&
+    planStartName.value !== planEndName.value
+  )
+)
+
+watch([planStartName, planEndName], () => {
+  refreshPlanUi()
+})
+
+const planSearchBbox = computed(() => {
+  if (!planStartPlace.value || !planEndPlace.value) return null
+  return computeLocalSearchBbox(planStartPlace.value, planEndPlace.value)
+})
+const planSearchBboxText = computed(() => {
+  const b = planSearchBbox.value
+  const start = planStartPlace.value
+  if (!b || !start) return ''
+  const w = ((b.xMax - b.xMin) * 111000 * Math.cos((start.lat * Math.PI) / 180) / 1000).toFixed(2)
+  const h = ((b.yMax - b.yMin) * 111000 / 1000).toFixed(2)
+  return `约 ${w}×${h} km`
+})
+
+function normalizeBbox(bbox) {
+  if (!bbox) return null
+  const xMin = Math.min(bbox.xMin, bbox.xMax)
+  const xMax = Math.max(bbox.xMin, bbox.xMax)
+  const yMin = Math.min(bbox.yMin, bbox.yMax)
+  const yMax = Math.max(bbox.yMin, bbox.yMax)
+  const minSpan = 0.0008
+  return {
+    xMin: xMax - xMin < minSpan ? xMin - minSpan / 2 : xMin,
+    xMax: xMax - xMin < minSpan ? xMax + minSpan / 2 : xMax,
+    yMin: yMax - yMin < minSpan ? yMin - minSpan / 2 : yMin,
+    yMax: yMax - yMin < minSpan ? yMax + minSpan / 2 : yMax,
+  }
+}
+
+function computeLocalSearchBbox(start, end) {
+  const cfg = appConfig.routePlan?.searchBbox || {}
+  const minPad = cfg.minPad ?? 0.002
+  const ratio = cfg.ratio ?? 0.3
+  const lngMin = Math.min(start.lng, end.lng)
+  const lngMax = Math.max(start.lng, end.lng)
+  const latMin = Math.min(start.lat, end.lat)
+  const latMax = Math.max(start.lat, end.lat)
+  const span = Math.max(lngMax - lngMin, latMax - latMin, 0.0008)
+  const pad = Math.max(minPad, span * ratio)
+  return normalizeBbox(clampBboxToCampus({
+    xMin: lngMin - pad,
+    xMax: lngMax + pad,
+    yMin: latMin - pad,
+    yMax: latMax + pad,
+  }))
+}
+
+function showPlanSearchBbox(bbox) {
+  if (!viewer || !bbox || appConfig.routePlan?.showSearchBbox === false) return
+  const box = normalizeBbox(bbox)
+  if (!box || box.xMax <= box.xMin || box.yMax <= box.yMin) return
+  clearPlanSearchBbox()
+  try {
+    searchBboxEntity = viewer.entities.add({
+      name: 'A* 局部搜索范围',
+      rectangle: {
+        coordinates: Cesium.Rectangle.fromDegrees(box.xMin, box.yMin, box.xMax, box.yMax),
+        material: Cesium.Color.CYAN.withAlpha(0.08),
+        outline: true,
+        outlineColor: Cesium.Color.CYAN.withAlpha(0.7),
+      },
+    })
+  } catch (e) {
+    console.warn('搜索范围框绘制失败', e)
+  }
+}
+
+function clearPlanSearchBbox() {
+  if (searchBboxEntity && viewer) {
+    viewer.entities.remove(searchBboxEntity)
+    searchBboxEntity = null
+  }
+}
+
+function clearRouteWaypoints() {
+  if (!viewer) return
+  for (const entity of routeWaypointEntities) {
+    viewer.entities.remove(entity)
+  }
+  routeWaypointEntities = []
+}
+
+function showRouteWaypoints(route) {
+  if (!viewer || !route?.points?.length || route.points.length < 3) return
+  clearRouteWaypoints()
+  for (let i = 1; i < route.points.length - 1; i++) {
+    const p = route.points[i]
+    const entity = viewer.entities.add({
+      name: `航点${i}`,
+      position: Cesium.Cartesian3.fromDegrees(p.lng, p.lat, p.height),
+      point: {
+        pixelSize: 6,
+        color: Cesium.Color.CYAN.withAlpha(0.9),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 1,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    })
+    routeWaypointEntities.push(entity)
+  }
+}
+
+function clearPlanMarkers() {
+  if (!viewer) return
+  for (const entity of planMarkerEntities) {
+    viewer.entities.remove(entity)
+  }
+  planMarkerEntities = []
+}
+
+function showPlanMarkers(start, end) {
+  if (!viewer) return
+  clearPlanMarkers()
+  const addMarker = (place, color, label) => {
+    const h = place.surfaceHeight ?? 5
+    const entity = viewer.entities.add({
+      name: label,
+      position: Cesium.Cartesian3.fromDegrees(place.lng, place.lat, h),
+      point: {
+        pixelSize: 12,
+        color,
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text: label,
+        font: '13px sans-serif',
+        pixelOffset: new Cesium.Cartesian2(0, -22),
+        fillColor: Cesium.Color.WHITE,
+        showBackground: true,
+        backgroundColor: Cesium.Color.fromBytes(0, 0, 0, 160),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    })
+    planMarkerEntities.push(entity)
+  }
+  addMarker(start, Cesium.Color.LIME, `起点：${start.name}`)
+  addMarker(end, Cesium.Color.ORANGE, `终点：${end.name}`)
+}
+
+function clearPlanPreviewLine() {
+  if (planPreviewEntity && viewer) {
+    viewer.entities.remove(planPreviewEntity)
+    planPreviewEntity = null
+  }
+}
+
+function showPlanPreviewLine(start, end) {
+  if (!viewer || !start || !end) return
+  clearPlanPreviewLine()
+  const h = planFlightHeight.value || 80
+  planPreviewEntity = viewer.entities.add({
+    name: '规划预览',
+    polyline: {
+      positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+        start.lng, start.lat, h,
+        end.lng, end.lat, h,
+      ]),
+      width: 3,
+      material: new Cesium.PolylineDashMaterialProperty({
+        color: Cesium.Color.CYAN.withAlpha(0.75),
+        dashLength: 14,
+      }),
+    },
+  })
+}
+
+function invalidatePlannedRouteIfStale() {
+  const planned = routes.value.find((r) => r.id === selectedRouteId.value && r.planned)
+  if (!planned) return
+  const matchStart = planned.startName === planStartName.value
+  const matchEnd = planned.endName === planEndName.value
+  if (matchStart && matchEnd) return
+  clearFlightEntities()
+  selectedRouteId.value = ''
+  planResult.value = null
+  routeEvaluation.value = null
+  showStatus('起终点已变更，请重新点击 A* 生成航线', 4500)
+}
+
+function refreshPlanUi() {
+  if (!viewer) return
+  try {
+    invalidatePlannedRouteIfStale()
+    if (
+      planStartPlace.value &&
+      planEndPlace.value &&
+      planStartName.value !== planEndName.value
+    ) {
+      showPlanMarkers(planStartPlace.value, planEndPlace.value)
+      if (planSearchBbox.value) showPlanSearchBbox(planSearchBbox.value)
+      showPlanPreviewLine(planStartPlace.value, planEndPlace.value)
+    } else {
+      clearPlanMarkers()
+      clearPlanSearchBbox()
+      clearPlanPreviewLine()
+    }
+  } catch (e) {
+    console.warn('规划 UI 刷新失败', e)
+  }
+}
+
+function onPlanPlaceChange() {
+  refreshPlanUi()
+}
+
+function getModelAnchorDegrees(entity = null) {
+  if (entity?.position) {
+    const carto = Cesium.Cartographic.fromCartesian(
+      entity.position.getValue(Cesium.JulianDate.now()),
+    )
+    return {
+      lng: Cesium.Math.toDegrees(carto.longitude),
+      lat: Cesium.Math.toDegrees(carto.latitude),
+      height: carto.height,
+    }
+  }
+  return appConfig.fallbackModel?.position || { lng: 118.944736, lat: 32.107470, height: 0 }
+}
+
+/** 世界坐标 → 相对白模锚点的 ENU 米制偏移（含 up，保证可逆） */
+function cartesianToModelLocal(cartesian, entity = null) {
+  const anchor = getModelAnchorDegrees(entity)
+  const origin = Cesium.Cartesian3.fromDegrees(anchor.lng, anchor.lat, anchor.height || 0)
+  const invEnu = Cesium.Matrix4.inverse(
+    Cesium.Transforms.eastNorthUpToFixedFrame(origin),
+    new Cesium.Matrix4(),
+  )
+  const local = Cesium.Matrix4.multiplyByPoint(invEnu, cartesian, new Cesium.Cartesian3())
+  return {
+    eastMeters: local.x,
+    northMeters: local.y,
+    upMeters: local.z,
+  }
+}
+
+function wgs84ToModelLocalMeters(lng, lat, height = 0, entity = null) {
+  const cartesian = Cesium.Cartesian3.fromDegrees(lng, lat, height)
+  const local = cartesianToModelLocal(cartesian, entity)
+  return { eastMeters: local.eastMeters, northMeters: local.northMeters, upMeters: local.upMeters }
+}
+
+/** 与白模同一坐标系：锚点 + 东/北米制偏移 → WGS84 绝对坐标 */
+function resolvePlacesFromModelLocal(layout, entity = null) {
+  const anchor = getModelAnchorDegrees(entity)
+  const origin = Cesium.Cartesian3.fromDegrees(anchor.lng, anchor.lat, anchor.height || 0)
+  const enu = Cesium.Transforms.eastNorthUpToFixedFrame(origin)
+
+  return layout.map((p) => {
+    if (p.lng != null && p.lat != null && p.eastMeters == null && p.northMeters == null) {
+      return { name: p.name, lng: p.lng, lat: p.lat, height: p.height || 80 }
+    }
+    const east = p.eastMeters ?? (p.nx != null ? p.nx * 400 : 0)
+    const north = p.northMeters ?? (p.ny != null ? p.ny * 400 : 0)
+    const up = p.upMeters ?? 0
+    const height = p.height || planFlightHeight.value || 80
+    const world = Cesium.Matrix4.multiplyByPoint(
+      enu,
+      new Cesium.Cartesian3(east, north, up),
+      new Cesium.Cartesian3(),
+    )
+    const carto = Cesium.Cartographic.fromCartesian(world)
+    return {
+      name: p.name,
+      lng: Cesium.Math.toDegrees(carto.longitude),
+      lat: Cesium.Math.toDegrees(carto.latitude),
+      height,
+      surfaceHeight: p.surfaceHeight ?? carto.height,
+      eastMeters: east,
+      northMeters: north,
+      upMeters: up,
+    }
+  })
+}
+
+function getCampusReferenceSphere() {
+  if (campusPlaces.value.length) {
+    const lngs = campusPlaces.value.map((p) => p.lng)
+    const lats = campusPlaces.value.map((p) => p.lat)
+    const lng = (Math.min(...lngs) + Math.max(...lngs)) / 2
+    const lat = (Math.min(...lats) + Math.max(...lats)) / 2
+    const radius = Math.max(
+      ((Math.max(...lngs) - Math.min(...lngs)) * 111000) / 2,
+      ((Math.max(...lats) - Math.min(...lats)) * 111000) / 2,
+      350,
+    ) * 1.15
+    return new Cesium.BoundingSphere(Cesium.Cartesian3.fromDegrees(lng, lat, 80), radius)
+  }
+  const anchor = getModelAnchorDegrees(fallbackModelEntity)
+  return new Cesium.BoundingSphere(
+    Cesium.Cartesian3.fromDegrees(anchor.lng, anchor.lat, 50),
+    500,
+  )
+}
+
+function getFallbackAnchorSphere() {
+  return getCampusReferenceSphere()
+}
+
+function buildRoutesFromPlaces() {
+  const find = (name) => campusPlaces.value.find((p) => p.name === name)
+  const pt = (name) => {
+    const p = find(name)
+    return p ? { lng: p.lng, lat: p.lat, height: p.height } : null
+  }
+  const routeDefs = [
+    {
+      id: 'xianlin-demo-1',
+      name: '仙林校区示范航线 A',
+      description: '南门 → 图书馆 → 实验中心 → 体育馆',
+      duration: 45,
+      names: ['南门入口', '图书馆', '实验中心', '方肇周体育馆'],
+    },
+    {
+      id: 'xianlin-demo-2',
+      name: '仙林校区示范航线 B',
+      description: '食堂 → 敬文学院 → 理科楼 → 文科楼',
+      duration: 50,
+      names: ['食堂', '敬文学院', '理科楼群', '文科楼群'],
+    },
+    {
+      id: 'xianlin-perimeter',
+      name: '仙林校区环线巡检',
+      description: '沿校区主要建筑环线飞行',
+      duration: 70,
+      names: ['南门入口', '方肇周体育馆', '北门广场', '学生公寓区 A', '食堂', '南门入口'],
+    },
+  ]
+  return routeDefs
+    .map((def) => {
+      const points = def.names.map(pt).filter(Boolean)
+      if (points.length < 2) return null
+      return {
+        id: def.id,
+        name: def.name,
+        description: def.description,
+        duration: def.duration,
+        points,
+      }
+    })
+    .filter(Boolean)
+}
+
+async function alignPlacesToModel() {
+  if (!placeLayoutRaw.length) return
+  const preservedPlanned = routes.value.filter((r) => r.planned)
+  campusPlaces.value = resolvePlacesFromModelLocal(placeLayoutRaw, fallbackModelEntity)
+  routes.value = [...preservedPlanned, ...buildRoutesFromPlaces()]
+  if (!campusPlaces.value.find((p) => p.name === planStartName.value)) {
+    planStartName.value = campusPlaces.value[0]?.name || ''
+  }
+  if (!campusPlaces.value.find((p) => p.name === planEndName.value)) {
+    planEndName.value = campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
+  }
+  const anchor = getModelAnchorDegrees(fallbackModelEntity)
+  const sample = campusPlaces.value.find((p) => p.name === '图书馆') || campusPlaces.value[0]
+  if (sample) {
+    console.info(
+      '[places] 白模锚点',
+      anchor.lng.toFixed(6),
+      anchor.lat.toFixed(6),
+      '→',
+      sample.name,
+      sample.lng.toFixed(6),
+      sample.lat.toFixed(6),
+      `(E${sample.eastMeters}m N${sample.northMeters}m)`,
+    )
+  }
+  if (planStartPlace.value && planEndPlace.value) {
+    refreshPlanUi()
+  }
+}
+
+async function loadCampusPlaces() {
+  const url = appConfig.routePlan?.placesUrl || './data/places.json'
+  try {
+    let places = []
+    try {
+      const apiData = await fetchJson(`${API_BASE}/places`)
+      places = apiData.places || []
+    } catch {
+      places = await fetchJson(url)
+    }
+    if (Array.isArray(places) && places.length) {
+      const draft = loadPlacesDraft()
+      if (draft?.places?.length) {
+        placeLayoutRaw = draft.places
+        console.info('[places] 已恢复浏览器标定草稿', draft.updatedAt)
+      } else {
+        placeLayoutRaw = places
+      }
+      campusPlaces.value = resolvePlacesFromModelLocal(placeLayoutRaw, null)
+      planStartName.value = campusPlaces.value[0]?.name || ''
+      planEndName.value = campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
+      if (!pickTargetName.value || !campusPlaces.value.find((p) => p.name === pickTargetName.value)) {
+        pickTargetName.value = campusPlaces.value[0]?.name || ''
+      }
+      if (appConfig.routePlan?.defaultFlightHeight != null) {
+        planFlightHeight.value = appConfig.routePlan.defaultFlightHeight
+      }
+      return true
+    }
+  } catch (e) {
+    console.warn('建筑列表加载失败', e)
+  }
+  return false
+}
+
+function getPlacesExportData() {
+  return placeLayoutRaw.map((p) => {
+    const eastMeters = Math.round(Number(p.eastMeters))
+    const northMeters = Math.round(Number(p.northMeters))
+    const out = {
+      name: p.name,
+      eastMeters: Number.isFinite(eastMeters) ? eastMeters : 0,
+      northMeters: Number.isFinite(northMeters) ? northMeters : 0,
+      height: p.height || planFlightHeight.value || 80,
+    }
+    if (p.upMeters != null && Number.isFinite(Number(p.upMeters))) {
+      out.upMeters = Math.round(Number(p.upMeters) * 10) / 10
+    }
+    if (p.surfaceHeight != null && Number.isFinite(Number(p.surfaceHeight))) {
+      out.surfaceHeight = Math.round(Number(p.surfaceHeight))
+    }
+    return out
+  })
+}
+
+function validatePlacesPayload(places) {
+  for (const p of places) {
+    if (!p.name) return `存在未命名建筑`
+    if (!Number.isFinite(p.eastMeters) || !Number.isFinite(p.northMeters)) {
+      return `「${p.name}」坐标无效，请重新取点`
+    }
+  }
+  return null
+}
+
+function clearPickMarker() {
+  if (pickMarkerEntity && viewer) {
+    viewer.entities.remove(pickMarkerEntity)
+    pickMarkerEntity = null
+  }
+}
+
+function showPickMarker(pick) {
+  if (!viewer || !pick) return
+  clearPickMarker()
+  const position = pick.cartesian
+    ? Cesium.Cartesian3.clone(pick.cartesian)
+    : Cesium.Cartesian3.fromDegrees(pick.lng, pick.lat, pick.height || 0)
+  pickMarkerEntity = viewer.entities.add({
+    name: '标定点',
+    position,
+    point: {
+      pixelSize: 14,
+      color: Cesium.Color.MAGENTA,
+      outlineColor: Cesium.Color.WHITE,
+      outlineWidth: 2,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+    label: {
+      text: `E${Math.round(pick.eastMeters)} N${Math.round(pick.northMeters)}`,
+      font: '12px sans-serif',
+      pixelOffset: new Cesium.Cartesian2(0, -24),
+      fillColor: Cesium.Color.WHITE,
+      showBackground: true,
+      backgroundColor: Cesium.Color.fromBytes(120, 0, 120, 200),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+  })
+}
+
+function isCampusModelPick(picked) {
+  if (!picked || !fallbackModelEntity) return false
+  if (picked.id === fallbackModelEntity) return true
+  return false
+}
+
+function pickCartesianOnModelRay(ray) {
+  if (!ray || !fallbackModelEntity || !viewer) return null
+
+  const time = viewer.clock.currentTime
+  const sphere = new Cesium.BoundingSphere()
+  if (fallbackModelEntity.computeBoundingSphere(time, sphere)) {
+    const hit = Cesium.IntersectionTests.raySphere(ray, sphere)
+    if (hit) {
+      return Cesium.Ray.getPoint(ray, hit.start)
+    }
+  }
+
+  const anchorPos = fallbackModelEntity.position?.getValue(time)
+  if (anchorPos) {
+    const normal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(anchorPos, new Cesium.Cartesian3())
+    const plane = Cesium.Plane.fromPointNormal(anchorPos, normal)
+    return Cesium.IntersectionTests.rayPlane(ray, plane)
+  }
+
+  return null
+}
+
+function pickPointOnScene(windowPosition) {
+  if (!viewer) return null
+  const scene = viewer.scene
+  scene.pickTranslucentDepth = true
+
+  let cartesian = scene.pickPosition(windowPosition)
+  if (Cesium.defined(cartesian)) {
+    return cartesianToPickResult(cartesian)
+  }
+
+  const ray = viewer.camera.getPickRay(windowPosition)
+  if (!ray) return null
+
+  const picked = scene.pick(windowPosition)
+  const drilled = scene.drillPick(windowPosition, 12)
+  const hitModel = isCampusModelPick(picked)
+    || drilled.some((item) => isCampusModelPick(item))
+
+  if (hitModel) {
+    cartesian = pickCartesianOnModelRay(ray)
+    if (Cesium.defined(cartesian)) {
+      return cartesianToPickResult(cartesian)
+    }
+  }
+
+  if (Cesium.defined(picked)) {
+    cartesian = scene.pickPosition(windowPosition)
+    if (Cesium.defined(cartesian)) {
+      return cartesianToPickResult(cartesian)
+    }
+  }
+
+  cartesian = scene.globe.pick(ray, scene)
+  if (Cesium.defined(cartesian)) {
+    return cartesianToPickResult(cartesian, hitModel ? 'globe-fallback' : 'globe')
+  }
+
+  cartesian = viewer.camera.pickEllipsoid(windowPosition, Cesium.Ellipsoid.WGS84)
+  if (Cesium.defined(cartesian)) {
+    return cartesianToPickResult(cartesian, 'ellipsoid')
+  }
+
+  return null
+}
+
+function cartesianToPickResult(cartesian, source = 'direct') {
+  const carto = Cesium.Cartographic.fromCartesian(cartesian)
+  const lng = Cesium.Math.toDegrees(carto.longitude)
+  const lat = Cesium.Math.toDegrees(carto.latitude)
+  const local = cartesianToModelLocal(cartesian, fallbackModelEntity)
+  return {
+    cartesian: Cesium.Cartesian3.clone(cartesian),
+    lng,
+    lat,
+    height: carto.height,
+    eastMeters: local.eastMeters,
+    northMeters: local.northMeters,
+    upMeters: local.upMeters,
+    source,
+  }
+}
+
+function pickPointOnSceneDeferred(windowPosition) {
+  return new Promise((resolve) => {
+    if (!viewer) {
+      resolve(null)
+      return
+    }
+    viewer.scene.requestRender()
+    const remove = viewer.scene.postRender.addEventListener(() => {
+      remove()
+      resolve(pickPointOnScene(windowPosition))
+    })
+  })
+}
+
+async function onPickClick(movement) {
+  if (!pickModeActive.value) return
+
+  try {
+    let pick = pickPointOnScene(movement.position)
+    if (!pick) {
+      pick = await pickPointOnSceneDeferred(movement.position)
+    }
+    if (!pick) {
+      showStatus('未取到坐标，请放大后点击地图或白模区域', 5000)
+      return
+    }
+    if (pick.source === 'globe-fallback' || pick.source === 'globe' || pick.source === 'ellipsoid') {
+      showStatus('已近似取点；放大后点击白模表面可提高精度', 3500)
+    }
+
+    lastPick.value = pick
+    showPickMarker(pick)
+
+    if (pickTargetName.value) {
+      await applyPickToBuilding(pickTargetName.value, pick)
+    } else {
+      showStatus(
+        `已取点 E${Math.round(pick.eastMeters)}m N${Math.round(pick.northMeters)}m，请先选择要标定的建筑`,
+        4000,
+      )
+    }
+  } catch (e) {
+    console.error('取点失败', e)
+    showStatus(`取点失败：${e.message}`, 5000)
+  }
+}
+
+function setupPickHandler() {
+  if (!viewer) return
+  destroyPickHandler()
+  pickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
+  pickHandler.setInputAction(onPickClick, Cesium.ScreenSpaceEventType.LEFT_CLICK)
+}
+
+function destroyPickHandler() {
+  if (pickHandler && !pickHandler.isDestroyed()) {
+    pickHandler.destroy()
+  }
+  pickHandler = null
+}
+
+function exitPickMode() {
+  pickModeActive.value = false
+  pickModeLoading.value = false
+  destroyPickHandler()
+  showStatus('已退出取点模式', 2000)
+}
+
+async function togglePickMode() {
+  if (pickModeActive.value || pickModeLoading.value) {
+    exitPickMode()
+    return
+  }
+  pickModeLoading.value = true
+  try {
+    const ok = await enterPickMode()
+    if (!ok) exitPickMode()
+  } finally {
+    pickModeLoading.value = false
+  }
+}
+
+async function enterPickMode() {
+  if (!viewer) {
+    showStatus('地图尚未加载', 3000)
+    return false
+  }
+
+  layers.fallbackModel = true
+  if (!fallbackModelEntity) {
+    await setupFallbackModel()
+  }
+  if (fallbackModelEntity) {
+    fallbackModelEntity.show = true
+  }
+  if (!fallbackModelEntity) {
+    showStatus('白模未加载：请勾选「简易校园模型」或点「飞到校区」后重试', 6000)
+    return false
+  }
+
+  await new Promise((r) => setTimeout(r, 200))
+  pickModeActive.value = true
+  setupPickHandler()
+  showStatus('取点模式已开启：在地图上左键点击目标位置（Esc 退出）', 5000)
+  return true
+}
+
+async function applyPickToBuilding(targetName = pickTargetName.value, pick = lastPick.value) {
+  if (typeof targetName !== 'string') targetName = pickTargetName.value
+  if (!pick || typeof targetName !== 'string' || !targetName) return
+
+  if (!placeLayoutRaw.length) {
+    await loadCampusPlaces()
+  }
+
+  const idx = placeLayoutRaw.findIndex((p) => p.name === targetName)
+  if (idx < 0) {
+    showStatus(`未找到建筑：${targetName}`, 4000)
+    return
+  }
+
+  placeLayoutRaw[idx] = {
+    name: targetName,
+    eastMeters: pick.eastMeters,
+    northMeters: pick.northMeters,
+    upMeters: pick.upMeters ?? 0,
+    height: placeLayoutRaw[idx].height || planFlightHeight.value || 80,
+    surfaceHeight: pick.height,
+  }
+
+  pickAppliedName.value = targetName
+  persistPlacesDraft()
+  await alignPlacesToModel()
+  refreshPlanUi()
+  showStatus(
+    `已更新 ${targetName}：E${Math.round(pick.eastMeters)}m N${Math.round(pick.northMeters)}m（已与航线规划同步）`,
+    5000,
+  )
+}
+
+function downloadPlacesJson(silent = false) {
+  const data = getPlacesExportData()
+  const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'places.json'
+  a.click()
+  URL.revokeObjectURL(url)
+  if (!silent) showStatus('places.json 已下载', 3000)
+}
+
+async function copyPlacesJson() {
+  const text = JSON.stringify(getPlacesExportData(), null, 2)
+  try {
+    await navigator.clipboard.writeText(text)
+    showStatus('places.json 已复制到剪贴板', 3000)
+  } catch {
+    showStatus('复制失败，请使用下载按钮', 4000)
+  }
+}
+
+async function savePlacesToServer() {
+  placesSaving.value = true
+  const places = getPlacesExportData()
+  const invalid = validatePlacesPayload(places)
+  if (invalid) {
+    placesSaving.value = false
+    showStatus(invalid, 6000)
+    return
+  }
+  const payload = { places }
+
+  try {
+    let res = await fetch(`${API_BASE}/places`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(payload),
+    })
+
+    if (res.status === 404) {
+      res = await fetch(`${API_BASE}/places/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(payload),
+      })
+    }
+
+    let data = null
+    const text = await res.text()
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      throw new Error(
+        res.status === 404
+          ? 'API 未支持保存，请重启 pg-server（node index.js）后重试'
+          : `服务器返回异常（${res.status}）`,
+      )
+    }
+
+    if (!res.ok) throw new Error(data?.error || data?.detail || `保存失败 ${res.status}`)
+
+    clearPlacesDraft()
+    downloadPlacesJson(true)
+    await loadCampusPlaces()
+    await alignPlacesToModel()
+    showStatus(`已保存 ${data.count} 栋建筑到 places.json，并已下载备份`, 6000)
+  } catch (e) {
+    console.error('保存 places.json 失败', e)
+    showStatus(`${e.message}。可先点「下载 JSON」手动替换文件`, 8000)
+  } finally {
+    placesSaving.value = false
+  }
+}
+
+async function planSmartRoute() {
+  if (!canPlanRoute.value || planning.value) return
+  const start = planStartPlace.value
+  const end = planEndPlace.value
+  if (!start || !end) return
+
+  planning.value = true
+  planResult.value = null
+  routeEvaluation.value = null
+
+  const searchBBox = computeLocalSearchBbox(start, end)
+  if (!searchBBox || searchBBox.xMax <= searchBBox.xMin || searchBBox.yMax <= searchBBox.yMin) {
+    showStatus('局部搜索范围无效，请先点「飞到校区」对齐建筑坐标', 6000)
+    planning.value = false
+    return
+  }
+
+  try {
+    showPlanSearchBbox(searchBBox)
+    showPlanMarkers(start, end)
+  } catch (e) {
+    console.warn('规划标记绘制失败，继续请求后端', e)
+  }
+
+  const payload = {
+    start: { lng: start.lng, lat: start.lat, height: planFlightHeight.value },
+    end: { lng: end.lng, lat: end.lat, height: planFlightHeight.value },
+    startName: start.name,
+    endName: end.name,
+    searchBBox,
+    groundHeight: groundHeight.value,
+    minScore: appConfig.routePlan?.minScore,
+    gridSize: appConfig.routePlan?.gridSize,
+    simplifyToleranceMeters: appConfig.routePlan?.simplifyToleranceMeters,
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/route-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `规划失败 ${res.status}`)
+
+    planResult.value = data
+    routeEvaluation.value = data.evaluation || null
+
+    const planned = data.route
+    routes.value = routes.value.filter((r) => !r.planned)
+    routes.value.unshift(planned)
+    selectedRouteId.value = planned.id
+
+    layers.route = true
+    layers.drone = true
+    await loadSelectedRoute(planned, { isPlanned: true, skipCameraFly: true })
+
+    showStatus(`智能航线已生成：${planned.name}（${data.algorithm}）`, 5000)
+  } catch (e) {
+    console.error('航线规划失败', e)
+    showStatus(`航线规划失败：${e.message}`, 6000)
+  } finally {
+    planning.value = false
+  }
+}
 
 function showStatus(msg, ms = 3000) {
   statusMessage.value = msg
@@ -232,14 +1225,30 @@ async function renderBatchInstances(instances) {
   const primitive = new Cesium.Primitive({
     geometryInstances: instances,
     appearance: new Cesium.PerInstanceColorAppearance({
-      closed: false,
+      closed: true,
       translucent: true,
       flat: true,
     }),
     show: layers.grid,
+    asynchronous: true,
   })
   viewer.scene.primitives.add(primitive)
   gridPrimitives.push(primitive)
+}
+
+function filterGridByFlightLayer(gridDataList) {
+  if (appConfig.grid?.flightLayerOnly === false) return gridDataList
+  const fh = appConfig.grid?.flightHeight ?? planFlightHeight.value ?? 80
+  const tol = appConfig.grid?.layerTolerance ?? 20
+  const zTarget = fh - groundHeight.value
+  const filtered = gridDataList.filter((g) => {
+    const z1 = parseFloat(g.z_min)
+    const z2 = parseFloat(g.z_max)
+    if (Number.isNaN(z1) || Number.isNaN(z2)) return false
+    const zMid = (z1 + z2) / 2
+    return Math.abs(zMid - zTarget) <= tol
+  })
+  return filtered.length ? filtered : gridDataList
 }
 
 function scoreToColor(score) {
@@ -253,6 +1262,8 @@ function scoreToColor(score) {
 
 function convertToInstances(gridDataList) {
   const instances = []
+  const minBoxHeight = appConfig.grid?.minBoxHeight ?? 8
+
   for (const g of gridDataList) {
     let x1 = parseFloat(g.x_min)
     let y1 = parseFloat(g.y_min)
@@ -271,12 +1282,11 @@ function convertToInstances(gridDataList) {
     const maxLng = Math.max(x1, x2)
     const minLat = Math.min(y1, y2)
     const maxLat = Math.max(y1, y2)
-    // x_min/y_min 已是 WGS84 经纬度，无需 CGCS2000 转换
     const minHeight = groundHeight.value + Math.min(z1, z2)
     const maxHeight = groundHeight.value + Math.max(z1, z2)
     const centerLng = (minLng + maxLng) / 2
     const centerLat = (minLat + maxLat) / 2
-    const centerHeight = (minHeight + maxHeight) / 2
+    let centerHeight = (minHeight + maxHeight) / 2
     const center = Cesium.Cartesian3.fromDegrees(centerLng, centerLat, centerHeight)
 
     const westPoint = Cesium.Cartesian3.fromDegrees(minLng, centerLat, centerHeight)
@@ -290,11 +1300,17 @@ function convertToInstances(gridDataList) {
     if (halfY < 0.01) halfY = 0.01
 
     let halfZ = (maxHeight - minHeight) / 2
-    if (halfZ < 0.01) halfZ = 0.01
+    if (halfZ < minBoxHeight / 2) {
+      halfZ = minBoxHeight / 2
+      centerHeight = minHeight + halfZ
+    }
 
     const dimX = halfX * 2
     const dimY = halfY * 2
     const dimZ = halfZ * 2
+    const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(
+      Cesium.Cartesian3.fromDegrees(centerLng, centerLat, centerHeight)
+    )
     const cacheKey = `${dimX.toFixed(4)}_${dimY.toFixed(4)}_${dimZ.toFixed(4)}`
     let boxGeometry = geometryCache.get(cacheKey)
     if (!boxGeometry) {
@@ -306,31 +1322,45 @@ function convertToInstances(gridDataList) {
 
     instances.push(new Cesium.GeometryInstance({
       geometry: boxGeometry,
-      modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(center),
+      modelMatrix,
       attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(scoreToColor(score)) },
     }))
   }
   return instances
 }
 
-function getCampusBbox(pad = 0.012) {
-  const c = appConfig.campusCenter || { lng: 118.956833, lat: 32.111583 }
+function getCampusBbox(pad = 0.004) {
+  if (campusPlaces.value.length) {
+    const lngs = campusPlaces.value.map((p) => p.lng)
+    const lats = campusPlaces.value.map((p) => p.lat)
+    return {
+      xMin: Math.min(...lngs) - pad,
+      xMax: Math.max(...lngs) + pad,
+      yMin: Math.min(...lats) - pad,
+      yMax: Math.max(...lats) + pad,
+    }
+  }
+  const c = appConfig.campusCenter || { lng: 118.9545, lat: 32.111 }
   return {
-    xMin: c.lng - pad,
-    xMax: c.lng + pad,
-    yMin: c.lat - pad,
-    yMax: c.lat + pad,
+    xMin: c.lng - 0.008,
+    xMax: c.lng + 0.008,
+    yMin: c.lat - 0.008,
+    yMax: c.lat + 0.008,
   }
 }
 
-function clampBboxToCampus(bbox, pad = 0.012) {
-  const campus = getCampusBbox(pad)
+function intersectBbox(a, b) {
   return {
-    xMin: Math.max(bbox.xMin, campus.xMin),
-    xMax: Math.min(bbox.xMax, campus.xMax),
-    yMin: Math.max(bbox.yMin, campus.yMin),
-    yMax: Math.min(bbox.yMax, campus.yMax),
+    xMin: Math.max(a.xMin, b.xMin),
+    xMax: Math.min(a.xMax, b.xMax),
+    yMin: Math.max(a.yMin, b.yMin),
+    yMax: Math.min(a.yMax, b.yMax),
   }
+}
+
+function clampBboxToCampus(bbox, pad = 0.004) {
+  const campus = getCampusBbox(pad)
+  return intersectBbox(bbox, campus)
 }
 
 function getViewBbox() {
@@ -351,6 +1381,12 @@ async function reloadGridsInView() {
   let bbox = getViewBbox()
   if (!bbox) return
 
+  const campus = getCampusBbox()
+  bbox = intersectBbox(bbox, campus)
+  if (bbox.xMax <= bbox.xMin || bbox.yMax <= bbox.yMin) {
+    bbox = campus
+  }
+
   gridLoading.value = true
   clearAllGrids()
 
@@ -366,7 +1402,6 @@ async function reloadGridsInView() {
       result = await fetchJson(`${API_BASE}/grids/bbox?${params}`)
       gridDemoMode.value = false
     } else if (appConfig.grid?.useDemoWhenOffline !== false) {
-      bbox = clampBboxToCampus(bbox)
       const params = new URLSearchParams({
         ...bbox,
         zMin: String(gridZMin.value),
@@ -380,8 +1415,8 @@ async function reloadGridsInView() {
       return
     }
 
-    const data = result.data || []
-    const BATCH = 5000
+    const data = filterGridByFlightLayer(result.data || [])
+    const BATCH = 2500
     for (let i = 0; i < data.length; i += BATCH) {
       const batch = data.slice(i, i + BATCH)
       await renderBatchInstances(convertToInstances(batch))
@@ -389,7 +1424,8 @@ async function reloadGridsInView() {
       await new Promise((r) => setTimeout(r, 5))
     }
     const mode = gridDemoMode.value ? '（演示）' : ''
-    showStatus(`已加载视口内 ${data.length.toLocaleString()} 条格网${mode}`)
+    const layerHint = appConfig.grid?.flightLayerOnly !== false ? ' · 飞行高度层' : ''
+    showStatus(`已加载视口内 ${data.length.toLocaleString()} 条格网${layerHint}${mode}`)
   } catch (e) {
     console.error('格网加载失败', e)
     showStatus('格网加载失败，请确认 API 服务已启动')
@@ -464,6 +1500,12 @@ async function loadAppConfig() {
     if (cfg.grid?.groundHeight != null) groundHeight.value = cfg.grid.groundHeight
     if (cfg.grid?.zMin != null) gridZMin.value = cfg.grid.zMin
     if (cfg.grid?.zMax != null) gridZMax.value = cfg.grid.zMax
+    if (cfg.defaultLayers) {
+      Object.assign(layers, cfg.defaultLayers)
+    }
+    if (cfg.fallbackModel?.enabled === false) {
+      layers.fallbackModel = false
+    }
   } catch (e) {
     console.warn('配置加载失败，使用默认值', e)
   }
@@ -484,18 +1526,28 @@ async function loadHotspotsIndex() {
 }
 
 async function loadRoutesFromApi() {
+  if (appConfig.routePlan?.alignToModel !== false) return
   try {
     const data = await fetchJson(`${API_BASE}/routes`)
     if (data.routes?.length) {
       routes.value = data.routes
-      selectedRouteId.value = data.routes[0].id
       return
     }
   } catch (e) {
     console.warn('航线 API 不可用，使用内置默认航线', e)
   }
   routes.value = [...DEFAULT_ROUTES]
-  selectedRouteId.value = DEFAULT_ROUTES[0].id
+}
+
+function onRouteSelect() {
+  if (!selectedRouteId.value) {
+    clearFlightEntities()
+    routeEvaluation.value = null
+    return
+  }
+  layers.route = true
+  layers.drone = true
+  loadSelectedRoute()
 }
 
 async function setupTerrain() {
@@ -524,6 +1576,7 @@ async function setupTileset() {
   if (!(await assetExists(url))) {
     showStatus('3D Tiles 未找到，将加载 campus-model2.glb 校园模型')
     layers.tileset = false
+    layers.fallbackModel = appConfig.fallbackModel?.enabled !== false
     return
   }
 
@@ -533,20 +1586,32 @@ async function setupTileset() {
     })
     viewer.scene.primitives.add(tileset3d)
     tileset3d.show = layers.tileset
+
+    const offset = cfg.heightOffset || 0
+    if (offset !== 0) {
+      const cartographic = Cesium.Cartographic.fromCartesian(tileset3d.boundingSphere.center)
+      const surface = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, 0)
+      const offsetPos = Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, offset)
+      const translation = Cesium.Cartesian3.subtract(offsetPos, surface, new Cesium.Cartesian3())
+      tileset3d.modelMatrix = Cesium.Matrix4.fromTranslation(translation)
+    }
+
     await viewer.zoomTo(tileset3d)
     layers.fallbackModel = false
     if (fallbackModelEntity) fallbackModelEntity.show = false
     if (campusBuildingsDs) campusBuildingsDs.show = false
     layers.buildings = false
-    showStatus('3D Tiles 实景模型加载成功')
+    showStatus('3D Tiles 仙林校区实景模型加载成功')
   } catch (e) {
     console.error('3D Tiles 加载失败', e)
     layers.tileset = false
+    layers.fallbackModel = appConfig.fallbackModel?.enabled !== false
     showStatus('3D Tiles 加载失败，将加载 campus-model2.glb 校园模型')
   }
 }
 
 async function setupCampusBuildings() {
+  if (layers.fallbackModel) return
   const cfg = appConfig.campusBuildings
   if (!cfg?.enabled) return
 
@@ -566,9 +1631,10 @@ async function setupCampusBuildings() {
       const color = entity.properties?.color?.getValue() || '#8ea4c0'
       const name = entity.properties?.name?.getValue() || ''
       if (!entity.polygon) continue
-      entity.polygon.material = Cesium.Color.fromCssColorString(color).withAlpha(0.92)
+      entity.polygon.material = Cesium.Color.fromCssColorString(color).withAlpha(0.88)
       entity.polygon.outline = true
-      entity.polygon.outlineColor = Cesium.Color.WHITE.withAlpha(0.7)
+      entity.polygon.outlineColor = Cesium.Color.WHITE.withAlpha(0.85)
+      entity.polygon.outlineWidth = 2
       entity.polygon.height = 0
       entity.polygon.extrudedHeight = h
       entity.polygon.heightReference = Cesium.HeightReference.CLAMP_TO_GROUND
@@ -584,7 +1650,7 @@ async function setupCampusBuildings() {
 
 async function setupFallbackModel() {
   const cfg = appConfig.fallbackModel
-  if (!cfg) return
+  if (!cfg || cfg.enabled === false || !layers.fallbackModel) return
 
   const pos = cfg.position || { lng: 118.944736, lat: 32.107470, height: 0 }
   const modelUrl = cfg.url || './Models/campus-model2.glb'
@@ -687,6 +1753,8 @@ function createLevelFlightOrientation(positionProperty, headingOffset = 0) {
 }
 
 function clearFlightEntities() {
+  clearRouteWaypoints()
+  clearPlanPreviewLine()
   if (routePolylineEntity) {
     viewer.entities.remove(routePolylineEntity)
     routePolylineEntity = null
@@ -697,26 +1765,34 @@ function clearFlightEntities() {
   }
 }
 
-async function loadSelectedRoute() {
-  const route = currentRoute.value
+async function loadSelectedRoute(routeOverride = null, options = {}) {
+  const route = routeOverride || currentRoute.value
   if (!route || !viewer) return
   clearFlightEntities()
 
   const pathData = buildFlightPathFromRoute(route)
   if (pathData.positions.length < 2) return
 
+  const isPlanned = options.isPlanned || route.planned
+  const lineColor = isPlanned ? Cesium.Color.CYAN : Cesium.Color.YELLOW
+  const polylinePositions = isPlanned
+    ? route.points.map((p) => Cesium.Cartesian3.fromDegrees(p.lng, p.lat, p.height))
+    : pathData.positions
+
   routePolylineEntity = viewer.entities.add({
     name: route.name,
     show: layers.route,
     polyline: {
-      positions: pathData.positions,
-      width: 4,
+      positions: polylinePositions,
+      width: isPlanned ? 5 : 4,
       material: new Cesium.PolylineGlowMaterialProperty({
-        glowPower: 0.25,
-        color: Cesium.Color.YELLOW,
+        glowPower: 0.3,
+        color: lineColor,
       }),
     },
   })
+
+  if (isPlanned) showRouteWaypoints(route)
 
   const start = route.points[0]
   const droneCfg = appConfig.droneModel || {}
@@ -730,8 +1806,9 @@ async function loadSelectedRoute() {
       show: layers.drone,
       model: {
         uri: droneUrl,
-        minimumPixelSize: droneCfg.minimumPixelSize || 64,
-        scale: droneCfg.scale || 1,
+        minimumPixelSize: droneCfg.minimumPixelSize ?? 32,
+        scale: droneCfg.scale ?? 2,
+        maximumScale: droneCfg.maximumScale ?? 120,
       },
     })
   } else {
@@ -756,29 +1833,53 @@ async function loadSelectedRoute() {
 
   startFlightAnimation(route, pathData, headingOffset)
   const lenKm = (pathData.totalLength / 1000).toFixed(2)
-  showStatus(`已加载航线：${route.name}（约 ${lenKm} km），动画播放中`)
-  evaluateCurrentRoute()
+  const tag = isPlanned ? '智能规划' : '已加载'
+  showStatus(`${tag}航线：${route.name}（约 ${lenKm} km），动画播放中`)
 
-  // 加载航线后把视角移到航线附近，便于看到无人机飞行
-  const sphere = Cesium.BoundingSphere.fromPoints(pathData.positions)
-  viewer.camera.flyToBoundingSphere(sphere, {
-    duration: 1.5,
-    offset: new Cesium.HeadingPitchRange(
-      Cesium.Math.toRadians(30),
-      Cesium.Math.toRadians(-30),
-      Math.max(pathData.totalLength * 1.8, 800),
-    ),
-  })
+  if (route.planned && routeEvaluation.value) {
+    // 规划接口已返回评估结果
+  } else {
+    evaluateCurrentRoute(route)
+  }
+
+  if (!options.skipCameraFly) {
+    const sphere = Cesium.BoundingSphere.fromPoints(pathData.positions)
+    viewer.camera.flyToBoundingSphere(sphere, {
+      duration: 1.5,
+      offset: new Cesium.HeadingPitchRange(
+        Cesium.Math.toRadians(25),
+        Cesium.Math.toRadians(-32),
+        Math.max(pathData.totalLength * 1.5, 700),
+      ),
+    })
+  }
 }
 
-async function evaluateCurrentRoute() {
-  if (!selectedRouteId.value) return
+async function evaluateCurrentRoute(routeOverride = null) {
+  const route = routeOverride || currentRoute.value
+  if (!route?.points?.length) return
+
   evaluating.value = true
-  routeEvaluation.value = null
+  if (!route.planned) routeEvaluation.value = null
+
   try {
+    if (route.planned) {
+      const res = await fetch(`${API_BASE}/routes/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          points: route.points,
+          groundHeight: groundHeight.value,
+        }),
+      })
+      routeEvaluation.value = await res.json()
+      if (!res.ok) throw new Error(routeEvaluation.value.error || '评估失败')
+      return
+    }
+
     const params = new URLSearchParams({ groundHeight: String(groundHeight.value) })
     routeEvaluation.value = await fetchJson(
-      `${API_BASE}/routes/${selectedRouteId.value}/evaluate?${params}`
+      `${API_BASE}/routes/${route.id}/evaluate?${params}`
     )
   } catch (e) {
     console.warn('航线评估失败', e)
@@ -836,45 +1937,65 @@ function replayFlight() {
   loadSelectedRoute()
 }
 
-function flyToCampus() {
-  if (!viewer) return
-
-  const flyOpts = {
-    duration: 2,
-    offset: new Cesium.HeadingPitchRange(
-      Cesium.Math.toRadians(30),
-      Cesium.Math.toRadians(-28),
-      1400,
-    ),
-  }
-
-  if (tileset3d?.show) {
-    viewer.flyTo(tileset3d, flyOpts)
+async function flyToCampus() {
+  if (!viewer || viewer.isDestroyed()) {
+    showStatus('地图尚未加载，请刷新页面（Ctrl+Shift+R）', 5000)
     return
   }
 
-  if (fallbackModelEntity?.show) {
-    viewer.flyTo(fallbackModelEntity, flyOpts)
-    return
+  try {
+    viewer.camera.cancelFlight()
+  } catch {
+    // ignore
   }
 
-  if (campusBuildingsDs?.show) {
-    viewer.flyTo(campusBuildingsDs, flyOpts)
-    return
+  showStatus('正在飞到仙林校区...')
+
+  const flyOffset = new Cesium.HeadingPitchRange(
+    Cesium.Math.toRadians(25),
+    Cesium.Math.toRadians(-35),
+    1100,
+  )
+
+  const afterFly = async () => {
+    showStatus('已定位到仙林校区白模')
+    if (layers.fallbackModel && placeLayoutRaw.length) {
+      await alignPlacesToModel()
+    }
+    if (layers.grid) scheduleGridReload()
+  }
+
+  try {
+    if (fallbackModelEntity) {
+      await viewer.flyTo(fallbackModelEntity, { duration: 2, offset: flyOffset })
+      await afterFly()
+      return
+    }
+  } catch (e) {
+    console.warn('flyTo model failed', e)
   }
 
   const pos = appConfig.fallbackModel?.position
     || appConfig.campusCenter
-    || { lng: 118.944736, lat: 32.107470, height: 0 }
-  viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(pos.lng, pos.lat, 600),
-    orientation: {
-      heading: Cesium.Math.toRadians(30),
-      pitch: Cesium.Math.toRadians(-28),
-      roll: 0,
-    },
-    duration: 2,
-  })
+    || { lng: 118.944736, lat: 32.107470 }
+  const sphere = new Cesium.BoundingSphere(
+    Cesium.Cartesian3.fromDegrees(pos.lng, pos.lat, 50),
+    900,
+  )
+  try {
+    await viewer.camera.flyToBoundingSphere(sphere, { duration: 2, offset: flyOffset })
+    await afterFly()
+  } catch (e) {
+    viewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(pos.lng, pos.lat, 480),
+      orientation: {
+        heading: Cesium.Math.toRadians(25),
+        pitch: Cesium.Math.toRadians(-35),
+        roll: 0,
+      },
+    })
+    await afterFly()
+  }
 }
 
 function toggleTerrain() {
@@ -889,11 +2010,23 @@ function toggleTileset() {
   if (tileset3d) tileset3d.show = layers.tileset
 }
 
-function toggleFallbackModel() {
+async function toggleFallbackModel() {
+  if (layers.fallbackModel && !fallbackModelEntity) {
+    await setupFallbackModel()
+    return
+  }
   if (fallbackModelEntity) fallbackModelEntity.show = layers.fallbackModel
 }
 
-function toggleBuildings() {
+async function toggleBuildings() {
+  if (layers.buildings && layers.fallbackModel) {
+    layers.buildings = false
+    showStatus('已启用 GLB 校园白模，无需叠加 GeoJSON 建筑块', 4000)
+    return
+  }
+  if (layers.buildings && !campusBuildingsDs) {
+    await setupCampusBuildings()
+  }
   if (campusBuildingsDs) campusBuildingsDs.show = layers.buildings
 }
 
@@ -903,8 +2036,16 @@ function toggleHeatmap() {
 
 function toggleGrid() {
   for (const prim of gridPrimitives) prim.show = layers.grid
-  if (layers.grid) scheduleGridReload()
-  else clearAllGrids()
+  if (layers.grid) {
+    if (layers.heatmap && heatmapLayer) {
+      layers.heatmap = false
+      heatmapLayer.show = false
+      showStatus('已关闭热力图，便于查看适航格网', 4000)
+    }
+    scheduleGridReload()
+  } else {
+    clearAllGrids()
+  }
 }
 
 function toggleRoute() {
@@ -1057,7 +2198,12 @@ onMounted(async () => {
 
   await loadAppConfig()
   // 优先加载下拉框数据，避免被 Cesium 初始化阻塞
-  await Promise.all([loadHotspotsIndex(), loadRoutesFromApi(), checkDatabase()])
+  await Promise.all([
+    loadHotspotsIndex(),
+    loadRoutesFromApi(),
+    loadCampusPlaces(),
+    checkDatabase(),
+  ])
 
   viewer = new Cesium.Viewer('cesiumContainer', {
     timeline: true,
@@ -1070,20 +2216,27 @@ onMounted(async () => {
   viewer.scene.globe.show = true
   viewer.scene.skyAtmosphere.show = true
   viewer.scene.fog.enabled = true
+  viewer.scene.globe.depthTestAgainstTerrain = true
+  viewer.scene.pickTranslucentDepth = true
 
   await setupTerrain()
   await setupTileset()
-  if (!tileset3d) {
+  if (!tileset3d && layers.fallbackModel) {
     await setupFallbackModel()
-    if (layers.buildings) await setupCampusBuildings()
+    await new Promise((r) => setTimeout(r, 2000))
+    await alignPlacesToModel()
   }
+  if (layers.buildings && !layers.fallbackModel) await setupCampusBuildings()
 
-  if (selectedFile.value) await loadAndShow(selectedFile.value)
-  if (currentRoute.value) {
-    await loadSelectedRoute()
-  } else {
-    flyToCampus()
-  }
+  clearFlightEntities()
+  clearPlanSearchBbox()
+  clearPlanMarkers()
+
+  if (layers.heatmap && selectedFile.value) await loadAndShow(selectedFile.value)
+
+  flyToCampus()
+  await new Promise((r) => setTimeout(r, 2500))
+  refreshPlanUi()
 
   cameraMoveHandler = viewer.camera.moveEnd.addEventListener(scheduleGridReload)
   if (layers.grid) await reloadGridsInView()
@@ -1094,6 +2247,7 @@ onMounted(async () => {
     if (e.key === 'o') flyToCampus()
     if (e.key === 'h') { layers.heatmap = !layers.heatmap; toggleHeatmap() }
     if (e.key === 'g') { layers.grid = !layers.grid; toggleGrid() }
+    if (e.key === 'Escape' && (pickModeActive.value || pickModeLoading.value)) exitPickMode()
   }
   document.addEventListener('keydown', onKeyDown)
 
@@ -1105,6 +2259,11 @@ onMounted(async () => {
 onUnmounted(() => {
   clearTimeout(gridLoadTimer)
   clearInterval(dbCheckTimer)
+  destroyPickHandler()
+  clearPickMarker()
+  clearPlanPreviewLine()
+  clearPlanSearchBbox()
+  clearPlanMarkers()
   if (cameraMoveHandler) cameraMoveHandler()
   if (viewer) viewer.destroy()
 })
@@ -1115,6 +2274,10 @@ onUnmounted(() => {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+}
+
+#cesiumContainer.pick-mode {
+  cursor: crosshair;
 }
 
 .platform-header {
@@ -1236,6 +2399,46 @@ select {
   color: #aaa;
   margin: 6px 0 0;
   line-height: 1.4;
+}
+
+.warn-hint {
+  color: #ffb74d;
+}
+
+.field-label {
+  display: block;
+  font-size: 11px;
+  color: #bbb;
+  margin: 8px 0 4px;
+}
+
+.plan-btn {
+  background: #00897b;
+}
+.plan-btn:hover:not(:disabled) {
+  background: #00695c;
+}
+
+.pick-section.active {
+  border-color: rgba(186, 104, 200, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(186, 104, 200, 0.35);
+}
+
+.pick-btn {
+  background: #6a1b9a;
+}
+.pick-btn.on {
+  background: #4a148c;
+  box-shadow: 0 0 0 2px rgba(186, 104, 200, 0.6);
+}
+
+.pick-result {
+  margin-top: 8px;
+}
+
+.pick-link {
+  margin-top: 6px;
+  margin-right: 10px;
 }
 
 .demo-hint { color: #ffb74d; }
