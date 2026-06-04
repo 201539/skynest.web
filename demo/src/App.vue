@@ -1228,12 +1228,32 @@ async function renderBatchInstances(instances) {
       closed: true,
       translucent: true,
       flat: true,
+      renderState: {
+        depthTest: { enabled: false },
+      },
     }),
     show: layers.grid,
     asynchronous: true,
   })
   viewer.scene.primitives.add(primitive)
   gridPrimitives.push(primitive)
+}
+
+function getFlightLayerZRange() {
+  const fh = appConfig.grid?.flightHeight ?? planFlightHeight.value ?? 80
+  const tol = appConfig.grid?.layerTolerance ?? 20
+  const zTarget = fh - groundHeight.value
+  return {
+    zMin: Math.max(gridZMin.value, zTarget - tol),
+    zMax: Math.min(gridZMax.value, zTarget + tol),
+  }
+}
+
+function syncCampusModelTransparency() {
+  if (!fallbackModelEntity?.model) return
+  fallbackModelEntity.model.color = layers.heatmap
+    ? Cesium.Color.WHITE.withAlpha(0.22)
+    : Cesium.Color.WHITE
 }
 
 function filterGridByFlightLayer(gridDataList) {
@@ -1379,13 +1399,17 @@ function getViewBbox() {
 async function reloadGridsInView() {
   if (!viewer || !layers.grid) return
   let bbox = getViewBbox()
-  if (!bbox) return
+  if (!bbox) bbox = getCampusBbox(0.002)
 
   const campus = getCampusBbox()
   bbox = intersectBbox(bbox, campus)
   if (bbox.xMax <= bbox.xMin || bbox.yMax <= bbox.yMin) {
     bbox = campus
   }
+
+  const zRange = appConfig.grid?.flightLayerOnly !== false
+    ? getFlightLayerZRange()
+    : { zMin: gridZMin.value, zMax: gridZMax.value }
 
   gridLoading.value = true
   clearAllGrids()
@@ -1395,8 +1419,8 @@ async function reloadGridsInView() {
     if (dbConnected.value) {
       const params = new URLSearchParams({
         ...bbox,
-        zMin: String(gridZMin.value),
-        zMax: String(gridZMax.value),
+        zMin: String(zRange.zMin),
+        zMax: String(zRange.zMax),
         limit: String(bboxLimit.value),
       })
       result = await fetchJson(`${API_BASE}/grids/bbox?${params}`)
@@ -1404,8 +1428,8 @@ async function reloadGridsInView() {
     } else if (appConfig.grid?.useDemoWhenOffline !== false) {
       const params = new URLSearchParams({
         ...bbox,
-        zMin: String(gridZMin.value),
-        zMax: String(gridZMax.value),
+        zMin: String(zRange.zMin),
+        zMax: String(zRange.zMax),
         limit: String(Math.min(bboxLimit.value, 1200)),
       })
       result = await fetchJson(`${API_BASE}/grids/demo?${params}`)
@@ -2030,18 +2054,37 @@ async function toggleBuildings() {
   if (campusBuildingsDs) campusBuildingsDs.show = layers.buildings
 }
 
-function toggleHeatmap() {
-  if (heatmapLayer) heatmapLayer.show = layers.heatmap
+async function toggleHeatmap() {
+  if (layers.heatmap) {
+    if (!selectedFile.value) {
+      if (csvFiles.value.length) selectedFile.value = csvFiles.value[0]
+      else {
+        showStatus('热力图数据未就绪，请刷新页面', 4000)
+        layers.heatmap = false
+        return
+      }
+    }
+    if (!heatmapLayer) {
+      await loadAndShow(selectedFile.value)
+    } else {
+      heatmapLayer.show = true
+      viewer.imageryLayers.raiseToTop(heatmapLayer)
+    }
+    syncCampusModelTransparency()
+    if (heatmapLayer) showStatus('热力图已显示', 2500)
+    else {
+      showStatus('当前帧无校区热力数据，请切换其他时序', 4000)
+      layers.heatmap = false
+    }
+  } else {
+    if (heatmapLayer) heatmapLayer.show = false
+    syncCampusModelTransparency()
+  }
 }
 
 function toggleGrid() {
   for (const prim of gridPrimitives) prim.show = layers.grid
   if (layers.grid) {
-    if (layers.heatmap && heatmapLayer) {
-      layers.heatmap = false
-      heatmapLayer.show = false
-      showStatus('已关闭热力图，便于查看适航格网', 4000)
-    }
     scheduleGridReload()
   } else {
     clearAllGrids()
@@ -2069,7 +2112,13 @@ async function loadAndShow(file) {
   }
   if (data.length) {
     heatmapLayer = createHeatmap(viewer, data)
-    if (heatmapLayer) heatmapLayer.show = layers.heatmap
+    if (heatmapLayer) {
+      heatmapLayer.show = layers.heatmap
+      viewer.imageryLayers.raiseToTop(heatmapLayer)
+      syncCampusModelTransparency()
+    }
+  } else {
+    showStatus('该帧 CSV 无有效数据', 3000)
   }
 }
 
@@ -2189,7 +2238,8 @@ function createHeatmap(viewer, points) {
     rectangle: Cesium.Rectangle.fromDegrees(west, south, east, north),
   })
   const imageryLayer = viewer.imageryLayers.addImageryProvider(heatmapProvider)
-  imageryLayer.alpha = 0.75
+  imageryLayer.alpha = 0.82
+  viewer.imageryLayers.raiseToTop(imageryLayer)
   return imageryLayer
 }
 
