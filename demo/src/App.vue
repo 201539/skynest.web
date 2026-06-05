@@ -163,12 +163,24 @@
         高度上限 {{ gridZMax }}m
         <input type="range" min="50" max="300" step="5" v-model.number="gridZMax" @change="reloadGridsInView" />
       </label>
+      <label class="slider-label">
+        适宜性筛选
+        <select v-model="gridScorePreset" @change="reloadGridsInView" class="full-width">
+          <option value="all">全部格网</option>
+          <option value="risk">风险格网（低于 0.4）</option>
+          <option value="caution">需关注格网（低于 0.6）</option>
+          <option value="suitable">适宜格网（不低于 0.6）</option>
+        </select>
+      </label>
       <button class="full-width-btn" @click="reloadGridsInView" :disabled="gridLoading">
         {{ gridLoading ? '加载中...' : '刷新当前视口格网' }}
       </button>
       <p v-if="gridDemoMode" class="hint demo-hint">演示模式：格网数据未导入，显示校区模拟格网</p>
-      <p v-else class="hint">视口内最多 {{ bboxLimit.toLocaleString() }} 条 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
-      <p class="hint">默认显示 80m 飞行高度层 · 彩色立体体块</p>
+      <p v-else class="hint">
+        已显示 {{ gridDisplayCount.toLocaleString() }} 个 · LOD {{ gridLod }}
+        <span v-if="gridQueryMs != null"> · 查询 {{ gridQueryMs }}ms</span>
+      </p>
+      <p class="hint">80m 飞行高度层 · 自动聚合远处格网 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
     </section>
   </aside>
 
@@ -220,6 +232,8 @@ let pickMarkerEntity = null
 let gridLoadTimer = null
 let dbCheckTimer = null
 let cameraMoveHandler = null
+let gridAbortController = null
+let gridRequestVersion = 0
 let geometryCache = new Map()
 let gridPrimitives = []
 
@@ -267,6 +281,11 @@ const groundHeight = ref(50)
 const gridZMin = ref(0)
 const gridZMax = ref(200)
 const gridDemoMode = ref(false)
+const gridScorePreset = ref('all')
+const gridDisplayCount = ref(0)
+const gridLod = ref(1)
+const gridQueryMs = ref(null)
+const gridBounds = ref(null)
 const routeEvaluation = ref(null)
 const evaluating = ref(false)
 
@@ -1196,8 +1215,8 @@ function showStatus(msg, ms = 3000) {
   if (ms > 0) setTimeout(() => { statusMessage.value = '' }, ms)
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url)
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, options)
   if (!res.ok) throw new Error(`${url} ${res.status}`)
   return res.json()
 }
@@ -1211,16 +1230,20 @@ async function assetExists(url) {
   }
 }
 
-function clearAllGrids() {
-  if (!viewer) return
-  for (const prim of gridPrimitives) {
+function removeGridPrimitives(primitives) {
+  if (!viewer || viewer.isDestroyed()) return
+  for (const prim of primitives) {
     if (prim && !prim.isDestroyed()) viewer.scene.primitives.remove(prim)
   }
-  gridPrimitives = []
-  geometryCache.clear()
 }
 
-async function renderBatchInstances(instances) {
+function clearAllGrids() {
+  removeGridPrimitives(gridPrimitives)
+  gridPrimitives = []
+  gridDisplayCount.value = 0
+}
+
+async function renderBatchInstances(instances, targetPrimitives) {
   if (!instances.length || !viewer) return
   const primitive = new Cesium.Primitive({
     geometryInstances: instances,
@@ -1234,9 +1257,10 @@ async function renderBatchInstances(instances) {
     }),
     show: layers.grid,
     asynchronous: true,
+    releaseGeometryInstances: true,
   })
   viewer.scene.primitives.add(primitive)
-  gridPrimitives.push(primitive)
+  targetPrimitives.push(primitive)
 }
 
 function getFlightLayerZRange() {
@@ -1307,27 +1331,16 @@ function convertToInstances(gridDataList) {
     const centerLng = (minLng + maxLng) / 2
     const centerLat = (minLat + maxLat) / 2
     let centerHeight = (minHeight + maxHeight) / 2
-    const center = Cesium.Cartesian3.fromDegrees(centerLng, centerLat, centerHeight)
 
-    const westPoint = Cesium.Cartesian3.fromDegrees(minLng, centerLat, centerHeight)
-    const eastPoint = Cesium.Cartesian3.fromDegrees(maxLng, centerLat, centerHeight)
-    let halfX = Cesium.Cartesian3.distance(westPoint, eastPoint) / 2
-    if (halfX < 0.01) halfX = 0.01
-
-    const southPoint = Cesium.Cartesian3.fromDegrees(centerLng, minLat, centerHeight)
-    const northPoint = Cesium.Cartesian3.fromDegrees(centerLng, maxLat, centerHeight)
-    let halfY = Cesium.Cartesian3.distance(southPoint, northPoint) / 2
-    if (halfY < 0.01) halfY = 0.01
-
-    let halfZ = (maxHeight - minHeight) / 2
-    if (halfZ < minBoxHeight / 2) {
-      halfZ = minBoxHeight / 2
-      centerHeight = minHeight + halfZ
+    // 局部校园范围内使用经纬度近似换算，可避免每个格网额外创建四个 Cartesian3。
+    const metersPerDegreeLat = 111320
+    const metersPerDegreeLng = metersPerDegreeLat * Math.cos(Cesium.Math.toRadians(centerLat))
+    const dimX = Math.max((maxLng - minLng) * metersPerDegreeLng, 0.01)
+    const dimY = Math.max((maxLat - minLat) * metersPerDegreeLat, 0.01)
+    let dimZ = Math.max(maxHeight - minHeight, minBoxHeight)
+    if (maxHeight - minHeight < minBoxHeight) {
+      centerHeight = minHeight + dimZ / 2
     }
-
-    const dimX = halfX * 2
-    const dimY = halfY * 2
-    const dimZ = halfZ * 2
     const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(
       Cesium.Cartesian3.fromDegrees(centerLng, centerLat, centerHeight)
     )
@@ -1369,50 +1382,64 @@ function getCampusBbox(pad = 0.004) {
   }
 }
 
-function intersectBbox(a, b) {
-  return {
+function intersectBboxes(a, b) {
+  const bbox = {
     xMin: Math.max(a.xMin, b.xMin),
     xMax: Math.min(a.xMax, b.xMax),
     yMin: Math.max(a.yMin, b.yMin),
     yMax: Math.min(a.yMax, b.yMax),
   }
+  return bbox.xMin <= bbox.xMax && bbox.yMin <= bbox.yMax ? bbox : null
 }
 
 function clampBboxToCampus(bbox, pad = 0.004) {
-  const campus = getCampusBbox(pad)
-  return intersectBbox(bbox, campus)
+  return intersectBboxes(bbox, getCampusBbox(pad))
+}
+
+function getGridScoreFilter() {
+  if (gridScorePreset.value === 'risk') return { scoreMax: '0.4' }
+  if (gridScorePreset.value === 'caution') return { scoreMax: '0.6' }
+  if (gridScorePreset.value === 'suitable') return { scoreMin: '0.6' }
+  return {}
 }
 
 function getViewBbox() {
   const rect = viewer.camera.computeViewRectangle()
   if (!rect) return null
 
-  const pad = 0.002
-  return {
+  const pad = appConfig.grid?.viewPadding ?? 0.0003
+  const viewBbox = {
     xMin: Cesium.Math.toDegrees(rect.west) - pad,
     xMax: Cesium.Math.toDegrees(rect.east) + pad,
     yMin: Cesium.Math.toDegrees(rect.south) - pad,
     yMax: Cesium.Math.toDegrees(rect.north) + pad,
   }
+  return gridBounds.value ? intersectBboxes(viewBbox, gridBounds.value) : viewBbox
 }
 
 async function reloadGridsInView() {
-  if (!viewer || !layers.grid) return
+  if (!viewer || viewer.isDestroyed() || !layers.grid) return
   let bbox = getViewBbox()
   if (!bbox) bbox = getCampusBbox(0.002)
 
-  const campus = getCampusBbox()
-  bbox = intersectBbox(bbox, campus)
-  if (bbox.xMax <= bbox.xMin || bbox.yMax <= bbox.yMin) {
-    bbox = campus
+  bbox = clampBboxToCampus(bbox)
+  if (!bbox) {
+    gridAbortController?.abort()
+    clearAllGrids()
+    return
   }
 
   const zRange = appConfig.grid?.flightLayerOnly !== false
     ? getFlightLayerZRange()
     : { zMin: gridZMin.value, zMax: gridZMax.value }
 
+  const requestVersion = ++gridRequestVersion
+  gridAbortController?.abort()
+  const controller = new AbortController()
+  gridAbortController = controller
   gridLoading.value = true
-  clearAllGrids()
+  loadingProgress.value = 0.05
+  const nextPrimitives = []
 
   try {
     let result
@@ -1422,8 +1449,10 @@ async function reloadGridsInView() {
         zMin: String(zRange.zMin),
         zMax: String(zRange.zMax),
         limit: String(bboxLimit.value),
+        lod: 'auto',
+        ...getGridScoreFilter(),
       })
-      result = await fetchJson(`${API_BASE}/grids/bbox?${params}`)
+      result = await fetchJson(`${API_BASE}/grids/bbox?${params}`, { signal: controller.signal })
       gridDemoMode.value = false
     } else if (appConfig.grid?.useDemoWhenOffline !== false) {
       const params = new URLSearchParams({
@@ -1432,7 +1461,7 @@ async function reloadGridsInView() {
         zMax: String(zRange.zMax),
         limit: String(Math.min(bboxLimit.value, 1200)),
       })
-      result = await fetchJson(`${API_BASE}/grids/demo?${params}`)
+      result = await fetchJson(`${API_BASE}/grids/demo?${params}`, { signal: controller.signal })
       gridDemoMode.value = true
     } else {
       showStatus('数据库未连接，无法加载格网')
@@ -1440,29 +1469,52 @@ async function reloadGridsInView() {
     }
 
     const data = filterGridByFlightLayer(result.data || [])
-    const BATCH = 2500
+    const BATCH = 2000
     for (let i = 0; i < data.length; i += BATCH) {
+      if (controller.signal.aborted || requestVersion !== gridRequestVersion) {
+        removeGridPrimitives(nextPrimitives)
+        return
+      }
       const batch = data.slice(i, i + BATCH)
-      await renderBatchInstances(convertToInstances(batch))
+      await renderBatchInstances(convertToInstances(batch), nextPrimitives)
       loadingProgress.value = (i + batch.length) / Math.max(data.length, 1)
-      await new Promise((r) => setTimeout(r, 5))
+      await new Promise((r) => setTimeout(r, 0))
     }
+
+    if (controller.signal.aborted || requestVersion !== gridRequestVersion) {
+      removeGridPrimitives(nextPrimitives)
+      return
+    }
+
+    const previousPrimitives = gridPrimitives
+    gridPrimitives = nextPrimitives
+    removeGridPrimitives(previousPrimitives)
+    gridDisplayCount.value = data.length
+    gridLod.value = result.lod || 1
+    gridQueryMs.value = result.queryMs ?? null
+
     const mode = gridDemoMode.value ? '（演示）' : ''
     const layerHint = appConfig.grid?.flightLayerOnly !== false ? ' · 飞行高度层' : ''
-    showStatus(`已加载视口内 ${data.length.toLocaleString()} 条格网${layerHint}${mode}`)
+    const lodText = gridLod.value > 1 ? `，LOD ${gridLod.value} 聚合显示` : ''
+    showStatus(`已加载视口内 ${data.length.toLocaleString()} 个格网${layerHint}${mode}${lodText}`)
   } catch (e) {
+    removeGridPrimitives(nextPrimitives)
+    if (e.name === 'AbortError') return
     console.error('格网加载失败', e)
     showStatus('格网加载失败，请确认 API 服务已启动')
   } finally {
-    loadingProgress.value = 0
-    gridLoading.value = false
+    if (requestVersion === gridRequestVersion) {
+      loadingProgress.value = 0
+      gridLoading.value = false
+      gridAbortController = null
+    }
   }
 }
 
-function scheduleGridReload() {
+function scheduleGridReload(delay = appConfig.grid?.reloadDebounceMs ?? 350) {
   if (!layers.grid || !appConfig.grid?.loadOnCameraMove) return
   clearTimeout(gridLoadTimer)
-  gridLoadTimer = setTimeout(reloadGridsInView, 600)
+  gridLoadTimer = setTimeout(reloadGridsInView, delay)
 }
 
 async function checkDatabase(showToast = false) {
@@ -1481,6 +1533,7 @@ async function checkDatabase(showToast = false) {
         const stats = await fetchJson(`${API_BASE}/stats`)
         dbConnected.value = true
         gridTotal.value = stats.total || 0
+        gridBounds.value = stats.bounds || null
         if (showToast) {
           showStatus(`数据库已连接 · ${gridTotal.value.toLocaleString()} 条格网`)
           await Promise.all([loadHotspotsIndex(), loadRoutesFromApi()])
@@ -2087,6 +2140,7 @@ function toggleGrid() {
   if (layers.grid) {
     scheduleGridReload()
   } else {
+    gridAbortController?.abort()
     clearAllGrids()
   }
 }
@@ -2100,7 +2154,8 @@ function toggleDrone() {
 }
 
 function onGridAlphaChange() {
-  reloadGridsInView()
+  clearTimeout(gridLoadTimer)
+  gridLoadTimer = setTimeout(reloadGridsInView, 200)
 }
 
 async function loadAndShow(file) {
@@ -2314,8 +2369,10 @@ onUnmounted(() => {
   clearPlanPreviewLine()
   clearPlanSearchBbox()
   clearPlanMarkers()
+  gridAbortController?.abort()
   if (cameraMoveHandler) cameraMoveHandler()
-  if (viewer) viewer.destroy()
+  if (viewer && !viewer.isDestroyed()) viewer.destroy()
+  viewer = null
 })
 </script>
 

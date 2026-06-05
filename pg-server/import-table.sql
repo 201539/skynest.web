@@ -1,4 +1,5 @@
 -- 兼容导入：用 text 替代 PostGIS 类型（无需安装 PostGIS）
+DROP TABLE IF EXISTS public.nanjing_uni_3d_grid_lod;
 DROP TABLE IF EXISTS public.nanjing_uni_3d_grid_new CASCADE;
 
 CREATE TABLE public.nanjing_uni_3d_grid_new (

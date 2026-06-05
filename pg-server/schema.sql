@@ -21,5 +21,23 @@ CREATE INDEX IF NOT EXISTS idx_grid_bbox
 CREATE INDEX IF NOT EXISTS idx_grid_xy_z
   ON nanjing_uni_3d_grid_new (x_min, y_min, z_min);
 
+-- 预聚合格网用于中远距离显示，避免每次视口变化都扫描和渲染数百万原始格网。
+CREATE TABLE IF NOT EXISTS nanjing_uni_3d_grid_lod (
+  lod SMALLINT NOT NULL,
+  x_min DOUBLE PRECISION NOT NULL,
+  x_max DOUBLE PRECISION NOT NULL,
+  y_min DOUBLE PRECISION NOT NULL,
+  y_max DOUBLE PRECISION NOT NULL,
+  z_min DOUBLE PRECISION NOT NULL,
+  z_max DOUBLE PRECISION NOT NULL,
+  static_suitability_score DOUBLE PRECISION,
+  min_suitability_score DOUBLE PRECISION,
+  max_suitability_score DOUBLE PRECISION,
+  source_count INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_grid_lod_xy_z
+  ON nanjing_uni_3d_grid_lod (lod, x_min, y_min, z_min);
+
 -- 统计
 -- SELECT COUNT(*) FROM nanjing_uni_3d_grid_new;

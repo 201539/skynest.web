@@ -30,9 +30,11 @@
   },
   "grid": {
     "groundHeight": 55,
-    "alpha": 0.85,
-    "bboxLimit": 5000,
+    "alpha": 0.7,
+    "bboxLimit": 6000,
     "loadOnCameraMove": true,
+    "viewPadding": 0.0003,
+    "reloadDebounceMs": 350,
     "zMin": 0,
     "zMax": 200,
     "useDemoWhenOffline": true,
