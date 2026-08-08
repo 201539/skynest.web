@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#243e70" />
+    <title>SkyNest 企业履约端</title>
+    <link rel="stylesheet" href="./enterprise.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div class="brand-row"><span class="brand-mark">S</span><span>SkyNest</span><a id="role-home" href="/">角色首页</a><span class="sandbox-badge">企业沙箱</span></div>
+        <h1>企业履约工作台</h1>
+        <p>承接校方合规任务 · 回传运力与配送状态</p>
+      </header>
+      <section class="notice"><strong>接口说明</strong><span>本页面模拟合作无人机企业 API，不代表任何真实企业接单或飞行。</span></section>
+      <section class="toolbar"><div><span class="eyebrow">任务队列</span><h2>待履约与进行中</h2></div><button id="refresh" type="button">刷新</button></section>
+      <section id="metrics" class="metrics"></section>
+      <section id="task-list" class="task-list" aria-live="polite"></section>
+      <p id="error" class="error" role="alert"></p>
+    </main>
+    <script src="./enterprise.js"></script>
+  </body>
+</html>

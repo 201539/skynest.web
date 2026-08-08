@@ -281,13 +281,13 @@ flowchart TB
 Start-Service postgresql-x64-18
 
 # 2. 一键启动（或分别启动 API + 前端）
-F:\无人机大创\start.ps1
+.\start.ps1
 
 # 3. 浏览器访问
 # http://localhost:5173
 
 # 4. （数据组）导入格网 — 需先放置备份文件
-cd F:\无人机大创\pg-server
+cd .\pg-server
 .\import-data.ps1
 node setup-db.js
 ```

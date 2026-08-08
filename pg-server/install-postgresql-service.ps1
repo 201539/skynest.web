@@ -1,6 +1,6 @@
 # Run as Administrator:
 #   Set-ExecutionPolicy Bypass -Scope Process -Force
-#   & "F:\无人机大创\pg-server\install-postgresql-service.ps1"
+#   & ".\pg-server\install-postgresql-service.ps1"
 
 $ErrorActionPreference = "Stop"
 
@@ -8,7 +8,10 @@ $pgRoot   = "C:\Program Files\PostgreSQL\18"
 $pgBin    = Join-Path $pgRoot "bin"
 $dataDir  = "C:\PostgreSQL\18\data"
 $service  = "postgresql-x64-18"
-$password = "974853"
+$password = Read-Host "Set a password for the PostgreSQL postgres user"
+if ([string]::IsNullOrWhiteSpace($password)) {
+    throw "PostgreSQL password cannot be empty"
+}
 $dbName   = "nanjing_uni_grid_score"
 
 Write-Host "=== PostgreSQL 18 Setup ===" -ForegroundColor Cyan
@@ -71,10 +74,10 @@ Write-Host "=== DONE ===" -ForegroundColor Green
 Write-Host "Host:     localhost"
 Write-Host "Port:     5432"
 Write-Host "User:     postgres"
-Write-Host "Password: $password"
+Write-Host "Password: configured from the interactive prompt (not displayed)"
 Write-Host "Database: $dbName"
 Write-Host ""
 Write-Host "Next:"
-Write-Host "  cd F:\无人机大创\pg-server"
+Write-Host "  cd .\pg-server"
 Write-Host "  node setup-db.js"
 Write-Host "  node index.js"

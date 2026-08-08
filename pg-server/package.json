@@ -3,7 +3,12 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "setup-db": "node setup-db.js"
+    "setup-db": "node setup-db.js",
+    "migrate": "node run-migrations.js",
+    "test:agent": "node agent/testAgent.js",
+    "test:demo": "node demo/testTaskState.js",
+    "test:route": "node demo/testRouteOrchestrator.js",
+    "test:provider": "node demo/testMockProvider.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
