@@ -29,11 +29,14 @@ New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 $hasCluster = Test-Path (Join-Path $dataDir "PG_VERSION")
 if (-not $hasCluster) {
     Write-Host "[1/4] initdb ..." -ForegroundColor Yellow
-    $pwFile = Join-Path $env:TEMP "pg_init_pw.txt"
-    Set-Content -Path $pwFile -Value $password -NoNewline -Encoding ascii
-    & "$pgBin\initdb.exe" -D $dataDir -U postgres -A scram-sha-256 -E UTF8 --locale=C --pwfile=$pwFile
-    if ($LASTEXITCODE -ne 0) { throw "initdb failed (exit $LASTEXITCODE)" }
-    Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
+    $pwFile = Join-Path ([System.IO.Path]::GetTempPath()) ("skynest-pg-init-{0}.txt" -f [guid]::NewGuid())
+    try {
+        Set-Content -LiteralPath $pwFile -Value $password -NoNewline -Encoding ascii
+        & "$pgBin\initdb.exe" -D $dataDir -U postgres -A scram-sha-256 -E UTF8 --locale=C --pwfile=$pwFile
+        if ($LASTEXITCODE -ne 0) { throw "initdb failed (exit $LASTEXITCODE)" }
+    } finally {
+        Remove-Item -LiteralPath $pwFile -Force -ErrorAction SilentlyContinue
+    }
     Write-Host "      OK" -ForegroundColor Green
 } else {
     Write-Host "[1/4] cluster exists, skip initdb" -ForegroundColor Green
@@ -58,15 +61,20 @@ if ($svc.Status -ne "Running") { throw "Service not running: $($svc.Status)" }
 Write-Host "      OK ($($svc.Status))" -ForegroundColor Green
 
 Write-Host "[4/4] create database ..." -ForegroundColor Yellow
-$env:PGPASSWORD = $password
-& "$pgBin\psql.exe" -U postgres -h localhost -p 5432 -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='$dbName'" | Out-Null
-$exists = & "$pgBin\psql.exe" -U postgres -h localhost -p 5432 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$dbName'"
-if ($exists -ne "1") {
-    & "$pgBin\createdb.exe" -U postgres -h localhost -p 5432 $dbName
-    if ($LASTEXITCODE -ne 0) { throw "createdb failed" }
-    Write-Host "      created $dbName" -ForegroundColor Green
-} else {
-    Write-Host "      $dbName already exists" -ForegroundColor Green
+try {
+    $env:PGPASSWORD = $password
+    $exists = & "$pgBin\psql.exe" -U postgres -h localhost -p 5432 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$dbName'"
+    if ($LASTEXITCODE -ne 0) { throw "database connection failed" }
+    if ($exists -ne "1") {
+        & "$pgBin\createdb.exe" -U postgres -h localhost -p 5432 $dbName
+        if ($LASTEXITCODE -ne 0) { throw "createdb failed" }
+        Write-Host "      created $dbName" -ForegroundColor Green
+    } else {
+        Write-Host "      $dbName already exists" -ForegroundColor Green
+    }
+} finally {
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+    $password = $null
 }
 
 Write-Host ""

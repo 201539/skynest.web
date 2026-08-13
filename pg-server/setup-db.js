@@ -3,6 +3,7 @@ require('dotenv').config()
 const fs = require('fs')
 const path = require('path')
 const { Pool } = require('pg')
+const { getLegacyDatabaseConfig } = require('./lib/databaseConfig')
 
 const pool = new Pool({
   host: process.env.PG_HOST || 'localhost',

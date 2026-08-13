@@ -17,6 +17,37 @@
     </div>
   </header>
 
+  <TaskSubmitPanel
+    v-if="activeRole === ROLE.STUDENT"
+    :current-user="currentUser"
+    @submitted="handleTaskSubmitted"
+    @notify="showStatus"
+    @view-route="handleViewTaskRoute"
+  />
+
+  <SchoolReviewPanel
+    v-else-if="activeRole === ROLE.SCHOOL"
+    @reviewed="handleTaskReviewed"
+    @notify="showStatus"
+    @view-route="handleViewTaskRoute"
+    @safety-updated="handleSafetyUpdated"
+    @view-restriction="handleViewRestriction"
+  />
+
+  <OperatorTaskPanel
+    v-else-if="activeRole === ROLE.OPERATOR"
+    @updated="handleOperatorTaskUpdated"
+    @notify="showStatus"
+    @view-route="handleViewTaskRoute"
+  />
+
+  <RoleOverviewPanel
+    v-else-if="activeRole"
+    :role="activeRole"
+    :overview="roleOverview"
+    :loading="roleOverviewLoading"
+  />
+
   <aside class="side-panel">
     <section class="panel-section admin-task-section">
       <div class="admin-title-row">
@@ -100,7 +131,7 @@
       </div>
     </section>
 
-    <section class="panel-section">
+    <section v-if="activeRole === ROLE.SCHOOL" class="panel-section">
       <h3>智能航线规划</h3>
       <label class="field-label">起点建筑</label>
       <select v-model="planStartName" class="full-width">
@@ -134,7 +165,11 @@
         <div class="eval-title">规划结果</div>
         <div>算法：{{ planResult.algorithm }} · 航点 {{ planResult.route?.points?.length ?? 0 }} 个</div>
         <div>航程约 {{ ((planResult.totalLengthMeters || 0) / 1000).toFixed(2) }} km</div>
-        <div v-if="planResult.algorithm === 'A*' && !planResult.fallbackUsed" class="hint">
+        <div v-if="planResult.dynamicCost?.enabled" class="hint">
+          动态 Cost V1 · 可通行 {{ planResult.dynamicCost.summary?.passable ?? 0 }}/{{ planResult.dynamicCost.summary?.total ?? 0 }} 个采样格网
+          · 平均通行成本 {{ Number(planResult.dynamicCost.summary?.average_traversal_cost || 0).toFixed(2) }}
+        </div>
+        <div v-else-if="planResult.algorithm === 'A*' && !planResult.fallbackUsed" class="hint">
           基于适航格网 A* 寻路；开阔区域最优路径可能接近直线
         </div>
         <div v-if="planResult.fallbackUsed" class="demo-hint">未找到格网最优路径，已使用直线备选</div>
@@ -256,7 +291,7 @@
       <div class="row btn-row">
         <button type="button" @click="replayFlight">重播</button>
         <button type="button" @click="flyToCampus">飞到校区</button>
-        <button type="button" @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
+        <button v-if="activeRole === ROLE.SCHOOL" type="button" @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
       </div>
       <div v-if="routeEvaluation" class="eval-box" :class="routeEvaluation.passable ? 'pass' : 'fail'">
         <div class="eval-title">航线适航评估</div>
@@ -305,7 +340,7 @@
     </section>
   </aside>
 
-  <div class="legend">
+  <div class="legend" :class="`legend-role-${activeRole}`">
     <h4>适航评分图例</h4>
     <div class="legend-item"><span class="swatch" style="background:#be1414"></span> 0–0.2 严重不适航</div>
     <div class="legend-item"><span class="swatch" style="background:#ff6e14"></span> 0.2–0.4 不适航</div>
@@ -320,12 +355,22 @@
     <div class="progress-fill" :style="{ width: (loadingProgress * 100) + '%' }"></div>
     <span>{{ Math.round(loadingProgress * 100) }}%</span>
   </div>
+
+  <div v-if="!authReady" class="auth-loading">正在验证登录状态…</div>
+  <LoginPanel v-else-if="!currentUser" @authenticated="handleAuthenticated" />
 </template>
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import * as Cesium from 'cesium'
 import proj4 from 'proj4'
+import OperatorTaskPanel from './components/OperatorTaskPanel.vue'
+import LoginPanel from './components/LoginPanel.vue'
+import RoleOverviewPanel from './components/RoleOverviewPanel.vue'
+import SchoolReviewPanel from './components/SchoolReviewPanel.vue'
+import TaskSubmitPanel from './components/TaskSubmitPanel.vue'
+import { ROLE } from './domain/contracts'
+import { demoApi } from './services/demoApi'
 
 proj4.defs('EPSG:4490', '+proj=longlat +ellps=GRS80 +no_defs')
 proj4.defs('EPSG:4326', '+proj=longlat +datum=WGS84 +no_defs')
@@ -336,6 +381,225 @@ window.CESIUM_BASE_URL = '/'
 
 const API_BASE = '/api'
 
+const activeRole = ref('')
+const currentUser = ref(null)
+const authReady = ref(false)
+const roleOverview = ref(null)
+const roleOverviewLoading = ref(false)
+const demoApiMode = demoApi.mode
+let roleOverviewRequestVersion = 0
+
+function handleAuthenticated(session) {
+  currentUser.value = session.user
+  activeRole.value = session.user.role
+  refreshRoleOverview()
+  showStatus(`已登录：${session.user.name} · ${session.user.role_label}`, 3500)
+}
+
+async function handleLogout() {
+  await demoApi.logout()
+  currentUser.value = null
+  activeRole.value = ''
+  roleOverview.value = null
+}
+
+function handleAuthExpired() {
+  currentUser.value = null
+  activeRole.value = ''
+  roleOverview.value = null
+  showStatus('登录状态已失效，请重新登录', 4500)
+}
+
+function authenticatedHeaders(extra = {}) {
+  const token = demoApi.getCurrentSession()?.token
+  return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra }
+}
+
+async function refreshRoleOverview() {
+  const requestVersion = ++roleOverviewRequestVersion
+  roleOverviewLoading.value = true
+
+  try {
+    const overview = await demoApi.getRoleOverview(activeRole.value)
+    if (requestVersion === roleOverviewRequestVersion) roleOverview.value = overview
+  } catch (error) {
+    console.error('角色工作台加载失败', error)
+    if (requestVersion === roleOverviewRequestVersion) roleOverview.value = null
+    showStatus(`角色工作台加载失败：${error.message}`, 5000)
+  } finally {
+    if (requestVersion === roleOverviewRequestVersion) roleOverviewLoading.value = false
+  }
+}
+
+async function handleTaskSubmitted() {
+  await refreshRoleOverview()
+}
+
+async function handleTaskReviewed() {
+  await refreshRoleOverview()
+}
+
+async function handleOperatorTaskUpdated() {
+  await refreshRoleOverview()
+}
+
+function normalizeTaskRoute(payload) {
+  const sourceRoute = payload?.route
+  const task = payload?.task || {}
+  const sourcePoints = sourceRoute?.points || sourceRoute?.waypoints || []
+  const points = sourcePoints
+    .map((point) => ({
+      lng: Number(point.lng),
+      lat: Number(point.lat),
+      height: Number(point.height ?? 80),
+    }))
+    .filter((point) => Number.isFinite(point.lng) && Number.isFinite(point.lat) && Number.isFinite(point.height))
+
+  if (!sourceRoute || points.length < 2) return null
+  const estimatedSeconds = Number(sourceRoute.estimated_duration_seconds)
+  const animationDuration = Number.isFinite(estimatedSeconds)
+    ? Math.max(25, Math.min(60, Math.round(estimatedSeconds / 4)))
+    : 35
+
+  return {
+    ...sourceRoute,
+    id: sourceRoute.id || `task-route-${task.id || Date.now()}`,
+    name: `任务航线 · ${task.origin || '起点'} → ${task.destination || '终点'}`,
+    description: `关联任务 ${task.id || '未编号'}，共 ${points.length} 个航点`,
+    points,
+    duration: animationDuration,
+    planned: true,
+    taskRoute: true,
+    sourceTaskId: task.id || null,
+  }
+}
+
+async function handleViewTaskRoute(payload) {
+  const taskRoute = normalizeTaskRoute(payload)
+  if (!taskRoute) {
+    showStatus('该任务暂未生成可显示的航点链', 4500)
+    return
+  }
+  if (!viewer || viewer.isDestroyed()) {
+    showStatus('三维地图尚未加载完成，请稍后重试', 4500)
+    return
+  }
+
+  routes.value = [taskRoute, ...routes.value.filter((route) => route.id !== taskRoute.id)]
+  selectedRouteId.value = taskRoute.id
+  layers.route = true
+  layers.drone = true
+  await loadSelectedRoute(taskRoute, { isPlanned: true, skipEvaluation: true })
+  showReplanOriginalRoute(taskRoute)
+  showStatus(taskRoute.replan_summary
+    ? `动态重规划完成：航程${formatSignedChange(taskRoute.replan_summary.distance_change_percent)}，风险${formatSignedChange(taskRoute.replan_summary.risk_change_percent)}`
+    : `已在地图中显示：${taskRoute.name}`, 5000)
+}
+
+function formatSignedChange(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '待计算'
+  return `${number > 0 ? '+' : ''}${number.toFixed(1)}%`
+}
+
+function clearReplanOriginalRoute() {
+  if (replanOriginalRouteEntity && viewer) {
+    viewer.entities.remove(replanOriginalRouteEntity)
+    replanOriginalRouteEntity = null
+  }
+}
+
+function showReplanOriginalRoute(route) {
+  clearReplanOriginalRoute()
+  const points = route?.previous_waypoints || []
+  if (!viewer || points.length < 2) return
+  const positions = points
+    .map((point) => Cesium.Cartesian3.fromDegrees(Number(point.lng), Number(point.lat), Number(point.height || 80)))
+  replanOriginalRouteEntity = viewer.entities.add({
+    name: '重规划前冲突航线',
+    show: layers.route,
+    polyline: {
+      positions,
+      width: 3,
+      material: new Cesium.PolylineDashMaterialProperty({
+        color: Cesium.Color.ORANGERED.withAlpha(0.9),
+        dashLength: 14,
+      }),
+    },
+  })
+}
+
+function clearRestrictionEntities() {
+  if (!viewer) return
+  restrictionEntities.forEach((entity) => viewer.entities.remove(entity))
+  restrictionEntities = []
+}
+
+function renderSafetyRestrictions() {
+  if (!viewer || viewer.isDestroyed()) return
+  clearRestrictionEntities()
+  safetyRestrictions.value
+    .filter((restriction) => restriction.status === 'active')
+    .forEach((restriction) => {
+      const lng = Number(restriction.center?.lng)
+      const lat = Number(restriction.center?.lat)
+      const radius = Number(restriction.radius_m)
+      if (!Number.isFinite(lng) || !Number.isFinite(lat) || !Number.isFinite(radius)) return
+
+      const entity = viewer.entities.add({
+        id: `safety-${restriction.id}`,
+        name: restriction.name,
+        position: Cesium.Cartesian3.fromDegrees(lng, lat, 8),
+        ellipse: {
+          semiMajorAxis: radius,
+          semiMinorAxis: radius,
+          material: Cesium.Color.RED.withAlpha(0.22),
+          outline: true,
+          outlineColor: Cesium.Color.ORANGERED.withAlpha(0.9),
+          height: 8,
+        },
+        label: {
+          text: `临时限制 · ${restriction.name}`,
+          font: '12px sans-serif',
+          fillColor: Cesium.Color.WHITE,
+          showBackground: true,
+          backgroundColor: Cesium.Color.DARKRED.withAlpha(0.8),
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      })
+      restrictionEntities.push(entity)
+    })
+}
+
+function handleSafetyUpdated(workspace) {
+  safetyRestrictions.value = Array.isArray(workspace?.restrictions) ? workspace.restrictions : []
+  renderSafetyRestrictions()
+}
+
+function handleViewRestriction(restriction) {
+  if (!viewer || viewer.isDestroyed()) return
+  const lng = Number(restriction?.center?.lng)
+  const lat = Number(restriction?.center?.lat)
+  const radius = Number(restriction?.radius_m)
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return
+
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(lng, lat, Math.max(700, (Number.isFinite(radius) ? radius : 150) * 4.5)),
+    orientation: {
+      heading: 0,
+      pitch: -Cesium.Math.PI_OVER_TWO,
+      roll: 0,
+    },
+    duration: 1.2,
+  })
+  showStatus(`已定位限制区：${restriction.name}`, 3500)
+}
+
+watch(activeRole, (role) => {
+  if (role) refreshRoleOverview()
+})
+
 let viewer = null
 let heatmapLayer = null
 let tileset3d = null
@@ -343,11 +607,13 @@ let terrainProvider = null
 let fallbackModelEntity = null
 let campusBuildingsDs = null
 let routePolylineEntity = null
+let replanOriginalRouteEntity = null
 let droneEntity = null
 let searchBboxEntity = null
 let planPreviewEntity = null
 let planMarkerEntities = []
 let routeWaypointEntities = []
+let restrictionEntities = []
 let pickHandler = null
 let pickMarkerEntity = null
 let gridLoadTimer = null
@@ -390,6 +656,7 @@ const DEFAULT_ROUTES = [
 ]
 
 const routes = ref([...DEFAULT_ROUTES])
+const safetyRestrictions = ref([])
 const selectedRouteId = ref('')
 const loadingProgress = ref(0)
 const gridLoading = ref(false)
@@ -1296,14 +1563,14 @@ async function savePlacesToServer() {
   try {
     let res = await fetch(`${API_BASE}/places`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      headers: authenticatedHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
       body: JSON.stringify(payload),
     })
 
     if (res.status === 404) {
       res = await fetch(`${API_BASE}/places/save`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        headers: authenticatedHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
         body: JSON.stringify(payload),
       })
     }
@@ -1438,12 +1705,15 @@ async function planSmartRoute() {
     minScore: appConfig.routePlan?.minScore,
     gridSize: appConfig.routePlan?.gridSize,
     simplifyToleranceMeters: appConfig.routePlan?.simplifyToleranceMeters,
+    useDynamicCost: true,
+    costProfile: 'balanced',
+    planningAt: new Date().toISOString(),
   }
 
   try {
     const res = await fetch(`${API_BASE}/route-plan`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     })
     const data = await res.json()
@@ -1841,6 +2111,59 @@ function getViewBbox() {
   return gridBounds.value ? intersectBboxes(viewBbox, gridBounds.value) : viewBbox
 }
 
+function generateLocalDemoGrids(bbox, zRange, limit = 800) {
+  const xSpan = bbox.xMax - bbox.xMin
+  const ySpan = bbox.yMax - bbox.yMin
+  if (!(xSpan > 0) || !(ySpan > 0) || limit <= 0) return []
+
+  const sideLength = Math.max(1, Math.ceil(Math.sqrt(limit)))
+  const stepX = xSpan / sideLength
+  const stepY = ySpan / sideLength
+  const center = appConfig.campusCenter || { lng: 118.944736, lat: 32.10747 }
+  const scoreFilter = getGridScoreFilter()
+  const minScore = scoreFilter.scoreMin == null ? null : Number(scoreFilter.scoreMin)
+  const maxScore = scoreFilter.scoreMax == null ? null : Number(scoreFilter.scoreMax)
+  const rangeMin = Number(zRange.zMin)
+  const rangeMax = Number(zRange.zMax)
+  const rangeCenter = Number.isFinite(rangeMin) && Number.isFinite(rangeMax)
+    ? (rangeMin + rangeMax) / 2
+    : 25
+  const halfThickness = Math.max(1, Math.min(4, Math.abs(rangeMax - rangeMin) / 2 || 4))
+  const data = []
+
+  for (let xIndex = 0; xIndex < sideLength && data.length < limit; xIndex += 1) {
+    for (let yIndex = 0; yIndex < sideLength && data.length < limit; yIndex += 1) {
+      const xMin = bbox.xMin + xIndex * stepX
+      const yMin = bbox.yMin + yIndex * stepY
+      const xMax = xMin + stepX
+      const yMax = yMin + stepY
+      const centerX = xMin + stepX / 2
+      const centerY = yMin + stepY / 2
+      const distance = Math.hypot(centerX - center.lng, centerY - center.lat)
+      const hash = Math.sin((centerX * 12989.8) + (centerY * 78233.1)) * 43758.5453
+      const noise = ((hash - Math.floor(hash)) - 0.5) * 0.1
+      const score = Cesium.Math.clamp(0.85 - distance * 40 + noise, 0, 1)
+      if (minScore != null && score < minScore) continue
+      if (maxScore != null && score >= maxScore) continue
+
+      data.push({
+        x_min: xMin,
+        x_max: xMax,
+        y_min: yMin,
+        y_max: yMax,
+        // Demo cells represent the selected flight layer, not a solid column
+        // from the ground to the aircraft. A thin slab keeps the campus model
+        // readable while still showing the suitability distribution.
+        z_min: Math.max(0, rangeCenter - halfThickness),
+        z_max: Math.max(1, rangeCenter + halfThickness),
+        static_suitability_score: Number(score.toFixed(3)),
+      })
+    }
+  }
+
+  return data
+}
+
 async function reloadGridsInView() {
   if (!viewer || viewer.isDestroyed() || !layers.grid) return
   let bbox = getViewBbox()
@@ -1880,13 +2203,14 @@ async function reloadGridsInView() {
       result = await fetchJson(`${API_BASE}/grids/bbox?${params}`, { signal: controller.signal })
       gridDemoMode.value = false
     } else if (appConfig.grid?.useDemoWhenOffline !== false) {
-      const params = new URLSearchParams({
-        ...bbox,
-        zMin: String(zRange.zMin),
-        zMax: String(zRange.zMax),
-        limit: String(Math.min(bboxLimit.value, 1200)),
-      })
-      result = await fetchJson(`${API_BASE}/grids/demo?${params}`, { signal: controller.signal })
+      const demoLimit = Math.min(bboxLimit.value, 800)
+      if (!gridDemoMode.value && gridAlpha.value > 0.45) gridAlpha.value = 0.35
+      result = {
+        data: generateLocalDemoGrids(bbox, zRange, demoLimit),
+        lod: 1,
+        queryMs: 0,
+        source: 'frontend-demo',
+      }
       gridDemoMode.value = true
     } else {
       showStatus('数据库未连接，无法加载格网')
@@ -2085,7 +2409,11 @@ async function setupTileset() {
   try {
     tileset3d = await createCesium3DTileset(url, {
       maximumScreenSpaceError: cfg.maximumScreenSpaceError || 16,
-    })
+    }
+    tileset3d = typeof Cesium.Cesium3DTileset.fromUrl === 'function'
+      ? await Cesium.Cesium3DTileset.fromUrl(url, tilesetOptions)
+      : new Cesium.Cesium3DTileset(tilesetOptions)
+    if (tileset3d.readyPromise) await tileset3d.readyPromise
     viewer.scene.primitives.add(tileset3d)
     tileset3d.show = layers.tileset
 
@@ -2257,6 +2585,7 @@ function createLevelFlightOrientation(positionProperty, headingOffset = 0) {
 function clearFlightEntities() {
   clearRouteWaypoints()
   clearPlanPreviewLine()
+  clearReplanOriginalRoute()
   if (routePolylineEntity) {
     viewer.entities.remove(routePolylineEntity)
     routePolylineEntity = null
@@ -2348,10 +2677,12 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
       : '等待企业沙箱起飞'
   showStatus(`${tag}航线：${route.name}（约 ${lenKm} km），${animationText}`)
 
-  if (route.planned && routeEvaluation.value) {
-    // 规划接口已返回评估结果
-  } else {
-    evaluateCurrentRoute(route)
+  if (!options.skipEvaluation) {
+    if (route.planned && routeEvaluation.value) {
+      // 规划接口已返回评估结果
+    } else {
+      evaluateCurrentRoute(route)
+    }
   }
 
   if (!options.skipCameraFly) {
@@ -2390,7 +2721,7 @@ async function evaluateCurrentRoute(routeOverride = null) {
     if (route.planned) {
       const res = await fetch(`${API_BASE}/routes/evaluate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           points: route.points,
           groundHeight: groundHeight.value,
@@ -2594,6 +2925,7 @@ function toggleGrid() {
 
 function toggleRoute() {
   if (routePolylineEntity) routePolylineEntity.show = layers.route
+  if (replanOriginalRouteEntity) replanOriginalRouteEntity.show = layers.route
 }
 
 function toggleDrone() {
@@ -2745,6 +3077,13 @@ function createHeatmap(viewer, points) {
   return imageryLayer
 }
 
+function handleGlobalKeyDown(event) {
+  if (event.key === 'o') flyToCampus()
+  if (event.key === 'h') { layers.heatmap = !layers.heatmap; toggleHeatmap() }
+  if (event.key === 'g') { layers.grid = !layers.grid; toggleGrid() }
+  if (event.key === 'Escape' && (pickModeActive.value || pickModeLoading.value)) exitPickMode()
+}
+
 onMounted(async () => {
   await loadAppConfig()
   Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_TOKEN || ''
@@ -2783,6 +3122,7 @@ onMounted(async () => {
   clearFlightEntities()
   clearPlanSearchBbox()
   clearPlanMarkers()
+  renderSafetyRestrictions()
 
   if (layers.heatmap && selectedFile.value) await loadAndShow(selectedFile.value)
 
@@ -2810,6 +3150,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  globalThis.removeEventListener('skynest-auth-expired', handleAuthExpired)
+  document.removeEventListener('keydown', handleGlobalKeyDown)
   clearTimeout(gridLoadTimer)
   clearInterval(dbCheckTimer)
   clearInterval(adminTaskTimer)
@@ -2818,6 +3160,7 @@ onUnmounted(() => {
   clearPlanPreviewLine()
   clearPlanSearchBbox()
   clearPlanMarkers()
+  clearRestrictionEntities()
   gridAbortController?.abort()
   if (cameraMoveHandler) cameraMoveHandler()
   if (viewer && !viewer.isDestroyed()) viewer.destroy()
@@ -2845,6 +3188,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 14px;
   padding: 0 16px 0 300px;
   background: linear-gradient(180deg, rgba(10, 25, 50, 0.92), rgba(10, 25, 50, 0.6));
   color: #fff;
@@ -2853,9 +3197,14 @@ onUnmounted(() => {
 }
 
 .header-title {
+  flex: 1;
+  min-width: 0;
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .portal-home-button {
@@ -2871,11 +3220,44 @@ onUnmounted(() => {
 }
 
 .header-status {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
   pointer-events: auto;
+  white-space: nowrap;
+}
+
+.session-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 5px 4px 9px;
+  color: #cfe6f9;
+  background: rgba(8, 19, 38, 0.68);
+  border: 1px solid rgba(144, 202, 249, 0.22);
+  border-radius: 9px;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+.session-badge span { color: #4fc3f7; font-size: 10px; }
+.session-badge strong { font-size: 11px; }
+.session-badge button { flex: 0 0 auto; padding: 4px 7px; color: #b0bec5; background: rgba(255, 255, 255, 0.06); font-size: 10px; }
+.session-badge button:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+
+.auth-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 3100;
+  display: grid;
+  place-items: center;
+  color: #b3e5fc;
+  background: #030a17;
+  font-size: 13px;
+  letter-spacing: 1px;
 }
 
 .link-btn {
@@ -2897,6 +3279,11 @@ onUnmounted(() => {
 }
 .status-dot.online { background: #4caf50; }
 .status-dot.offline { background: #f44336; }
+
+@media (max-width: 1100px) {
+  .header-title { display: none; }
+  .header-status { flex: 0 1 auto; }
+}
 
 .side-panel {
   position: absolute;
@@ -3122,7 +3509,12 @@ select {
   z-index: 999;
   font-size: 11px;
   backdrop-filter: blur(8px);
+  transition: right 0.2s ease;
 }
+
+.legend.legend-role-student { right: 452px; }
+.legend.legend-role-school { right: 452px; }
+.legend.legend-role-operator { right: 452px; }
 
 .legend h4 {
   margin: 0 0 8px;

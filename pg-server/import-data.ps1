@@ -27,7 +27,9 @@ $dbHost = if ($env:PG_HOST) { $env:PG_HOST } else { "localhost" }
 $dbPort = if ($env:PG_PORT) { $env:PG_PORT } else { "5432" }
 $dbUser = if ($env:PG_USER) { $env:PG_USER } else { "postgres" }
 $dbName = if ($env:PG_DATABASE) { $env:PG_DATABASE } else { "nanjing_uni_grid_score" }
-$env:PGPASSWORD = $env:PG_PASSWORD
+if ([string]::IsNullOrWhiteSpace($env:PG_PASSWORD)) {
+    throw "PG_PASSWORD is not configured. Add it to pg-server/.env or the current process environment."
+}
 
 Write-Host "=== Import Grid Data ===" -ForegroundColor Cyan
 Write-Host "Dump: $dumpFile"
@@ -38,20 +40,26 @@ if (-not (Test-Path -LiteralPath $dumpFile)) {
     throw "Dump file not found: $dumpFile"
 }
 
-Write-Host "[1/3] Create compatible table schema ..." -ForegroundColor Yellow
-& "$pgBin\psql.exe" -h $dbHost -p $dbPort -U $dbUser -d $dbName -f $importSql
-if ($LASTEXITCODE -ne 0) { throw "Schema creation failed" }
-Write-Host "      OK" -ForegroundColor Green
+try {
+    $env:PGPASSWORD = $env:PG_PASSWORD
 
-Write-Host "[2/3] Import data (about 1.3GB, 15-40 min) ..." -ForegroundColor Yellow
-Write-Host "      Please wait..." -ForegroundColor Yellow
-$dumpResolved = (Resolve-Path -LiteralPath $dumpFile).Path
-$restoreOutput = cmd /c "`"$pgBin\pg_restore.exe`" -h $dbHost -p $dbPort -U $dbUser -d $dbName --data-only --no-owner --no-acl --verbose `"$dumpResolved`" 2>&1"
-$restoreOutput | Tee-Object -FilePath $logFile
-# pg_restore may return non-zero for ignorable index warnings; verify count below
+    Write-Host "[1/3] Create compatible table schema ..." -ForegroundColor Yellow
+    & "$pgBin\psql.exe" -h $dbHost -p $dbPort -U $dbUser -d $dbName -f $importSql
+    if ($LASTEXITCODE -ne 0) { throw "Schema creation failed" }
+    Write-Host "      OK" -ForegroundColor Green
 
-Write-Host "[3/3] Verify row count ..." -ForegroundColor Yellow
-$count = & "$pgBin\psql.exe" -h $dbHost -p $dbPort -U $dbUser -d $dbName -tAc "SELECT COUNT(*) FROM nanjing_uni_3d_grid_new"
+    Write-Host "[2/3] Import data (about 1.3GB, 15-40 min) ..." -ForegroundColor Yellow
+    Write-Host "      Please wait..." -ForegroundColor Yellow
+    $dumpResolved = (Resolve-Path -LiteralPath $dumpFile).Path
+    $restoreOutput = cmd /c "`"$pgBin\pg_restore.exe`" -h $dbHost -p $dbPort -U $dbUser -d $dbName --data-only --no-owner --no-acl --verbose `"$dumpResolved`" 2>&1"
+    $restoreOutput | Tee-Object -FilePath $logFile
+    # pg_restore may return non-zero for ignorable index warnings; verify count below
+
+    Write-Host "[3/3] Verify row count ..." -ForegroundColor Yellow
+    $count = & "$pgBin\psql.exe" -h $dbHost -p $dbPort -U $dbUser -d $dbName -tAc "SELECT COUNT(*) FROM nanjing_uni_3d_grid_new"
+} finally {
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 Write-Host ""
 Write-Host "=== DONE ===" -ForegroundColor Green
 Write-Host "Rows imported: $count"

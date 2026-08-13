@@ -1,5 +1,6 @@
 // 与白模锚点 + eastMeters/northMeters 布局一致（118.944736, 32.107470 附近）
 const CAMPUS = { lng: 118.951, lat: 32.114, pad: 0.018 }
+const dynamicCost = require('./dynamicCost')
 
 function clampToCampus(bbox) {
   return {
@@ -129,7 +130,9 @@ function astar(passable, costs, cols, rows, startIdx, endIdx) {
       cameFrom[ni] = current
       gScore[ni] = tentative
       fScore[ni] = tentative + Math.hypot(nc - endC, nr - endR)
-      if (!open.includes(ni)) pushOpen(ni)
+      const existingOpenIndex = open.indexOf(ni)
+      if (existingOpenIndex >= 0) open.splice(existingOpenIndex, 1)
+      pushOpen(ni)
     }
   }
 
@@ -226,7 +229,7 @@ async function fetchGridsInBbox(pool, bbox, zMin, zMax, limit = 15000) {
   return result.rows
 }
 
-async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
+async function planStaticRoute(pool, start, end, options = {}, generateDemoGrids) {
   const searchBBox = options.searchBBox || computeSearchBbox(start, end, options)
   const groundHeight = options.groundHeight ?? 50
   const minScore = options.minScore ?? 0.25
@@ -329,6 +332,215 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
       duration,
       points,
       planned: true,
+      startName: options.startName,
+      endName: options.endName,
+    },
+  }
+}
+
+async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
+  if (typeof options.dynamicCostSurfaceProvider !== 'function') {
+    const staticPlan = await planStaticRoute(pool, start, end, options, generateDemoGrids)
+    return {
+      ...staticPlan,
+      costModel: 'static-v1',
+      dynamicCost: {
+        enabled: false,
+        source: null,
+        sampledAt: null,
+        timeZone: options.timeZone || null,
+        model: null,
+        summary: null,
+        fallbackReason: null,
+      },
+      route: {
+        ...staticPlan.route,
+        costModel: 'static-v1',
+      },
+    }
+  }
+
+  const searchBBox = options.searchBBox || computeSearchBbox(start, end, options)
+  const groundHeight = options.groundHeight ?? 50
+  const flightHeight = start.height ?? end.height ?? 80
+  const zTarget = flightHeight - groundHeight
+  const gridSize = Math.min(70, Math.max(24, options.gridSize ?? 48))
+  const cols = gridSize
+  const rows = gridSize
+  let surface
+
+  try {
+    surface = await options.dynamicCostSurfaceProvider({
+      xMin: searchBBox.xMin,
+      xMax: searchBBox.xMax,
+      yMin: searchBBox.yMin,
+      yMax: searchBBox.yMax,
+      zTarget,
+      cols,
+      rows,
+      at: options.planningAt,
+      timeZone: options.timeZone,
+    })
+    if (!Array.isArray(surface?.cells) || surface.cells.length !== cols * rows) {
+      throw new Error('Dynamic Cost surface is incomplete')
+    }
+  } catch (error) {
+    if (options.requireDynamicCost) throw error
+    const staticPlan = await planStaticRoute(pool, start, end, options, generateDemoGrids)
+    return {
+      ...staticPlan,
+      costModel: 'static-v1',
+      dynamicCost: {
+        enabled: false,
+        source: null,
+        sampledAt: null,
+        timeZone: options.timeZone || null,
+        model: null,
+        summary: null,
+        fallbackReason: error.message,
+      },
+      route: {
+        ...staticPlan.route,
+        costModel: 'static-v1',
+      },
+    }
+  }
+
+  const costCells = surface.cells.map((cell) => ({
+    ...cell,
+    grid_data_missing: cell.new_id == null,
+  }))
+  const costOptions = options.dynamicCostOptions || {}
+  const costResults = dynamicCost.evaluateCells(costCells, costOptions)
+  const passable = new Array(cols * rows).fill(false)
+  const costs = new Array(cols * rows).fill(Infinity)
+  const resultByNode = new Array(cols * rows)
+
+  for (let surfaceIndex = 0; surfaceIndex < costCells.length; surfaceIndex++) {
+    const cell = costCells[surfaceIndex]
+    const result = costResults[surfaceIndex]
+    const nodeIndex = idx(Number(cell.sample_col), Number(cell.sample_row), cols)
+    passable[nodeIndex] = result.passable
+    costs[nodeIndex] = result.passable ? result.traversal_cost : Infinity
+    resultByNode[nodeIndex] = result
+  }
+
+  const startSnap = snapToNode(start.lng, start.lat, searchBBox, cols, rows)
+  const endSnap = snapToNode(end.lng, end.lat, searchBBox, cols, rows)
+  if (!passable[startSnap.idx] || !passable[endSnap.idx]) {
+    const error = new Error('航线起点或终点位于当前硬约束区域内')
+    error.code = 'NO_SAFE_ROUTE'
+    error.details = {
+      endpoint: !passable[startSnap.idx] ? 'start' : 'end',
+      start_constraints: resultByNode[startSnap.idx]?.hard_constraints || [],
+      end_constraints: resultByNode[endSnap.idx]?.hard_constraints || [],
+      cost_summary: dynamicCost.summarizeCosts(costResults),
+      search_bbox: searchBBox,
+    }
+    throw error
+  }
+  const startNode = findNearestPassable(passable, cols, rows, startSnap.c, startSnap.r)
+  const endNode = findNearestPassable(passable, cols, rows, endSnap.c, endSnap.r)
+  const pathNodes = astar(passable, costs, cols, rows, startNode, endNode)
+
+  if (!pathNodes?.length) {
+    const error = new Error('未找到满足当前动态约束的安全航线')
+    error.code = 'NO_SAFE_ROUTE'
+    error.details = {
+      cost_summary: dynamicCost.summarizeCosts(costResults),
+      search_bbox: searchBBox,
+    }
+    throw error
+  }
+
+  let points
+  if (pathNodes.length === 1) {
+    points = [
+      { lng: start.lng, lat: start.lat, height: start.height ?? flightHeight },
+      { lng: end.lng, lat: end.lat, height: end.height ?? flightHeight },
+    ]
+  } else {
+    points = pathNodes.map((node) => {
+      const { lng, lat } = nodeToLngLat(node, searchBBox, cols, rows)
+      return { lng, lat, height: flightHeight }
+    })
+    points[0] = { lng: start.lng, lat: start.lat, height: start.height ?? flightHeight }
+    points[points.length - 1] = {
+      lng: end.lng,
+      lat: end.lat,
+      height: end.height ?? flightHeight,
+    }
+    points = simplifyPath(points, options.simplifyToleranceMeters ?? 8)
+  }
+
+  let totalLength = 0
+  for (let pointIndex = 1; pointIndex < points.length; pointIndex++) {
+    totalLength += haversineMeters(
+      points[pointIndex - 1].lng,
+      points[pointIndex - 1].lat,
+      points[pointIndex].lng,
+      points[pointIndex].lat
+    )
+  }
+
+  const summary = dynamicCost.summarizeCosts(costResults)
+  const model = dynamicCost.getModelConfig(costOptions)
+  const coveredGridCount = surface.cells.filter((cell) => cell.new_id != null).length
+  const duration = Math.max(25, Math.min(120, Math.round(totalLength / 25)))
+  let totalTraversalCost = 0
+  for (let pathIndex = 1; pathIndex < pathNodes.length; pathIndex++) {
+    const previousNode = pathNodes[pathIndex - 1]
+    const currentNode = pathNodes[pathIndex]
+    const previousCol = previousNode % cols
+    const previousRow = Math.floor(previousNode / cols)
+    const currentCol = currentNode % cols
+    const currentRow = Math.floor(currentNode / cols)
+    const stepMultiplier = Math.hypot(currentCol - previousCol, currentRow - previousRow)
+    totalTraversalCost += costs[currentNode] * stepMultiplier
+  }
+  const pathRiskFactors = [...new Set(
+    pathNodes.flatMap((node) => resultByNode[node]?.risk_factors || [])
+  )]
+  const avoidedZones = [...new Set(
+    costResults.flatMap((result) => result.active_context?.no_fly_zones || [])
+  )]
+
+  return {
+    searchBBox,
+    demo: false,
+    fallbackUsed: false,
+    algorithm: 'A*',
+    costModel: 'dynamic-v1',
+    dynamicCost: {
+      enabled: true,
+      source: 'v3',
+      sampledAt: surface.at,
+      timeZone: surface.timeZone,
+      model,
+      summary,
+      fallbackReason: null,
+      dataCoverage: {
+        sampled: surface.cells.length,
+        matched: coveredGridCount,
+        missing: surface.cells.length - coveredGridCount,
+      },
+    },
+    gridSize: { cols, rows },
+    gridCount: coveredGridCount,
+    nodeCount: pathNodes.length,
+    totalLengthMeters: Math.round(totalLength),
+    totalTraversalCost: Math.round(totalTraversalCost * 10000) / 10000,
+    route: {
+      id: `planned-${Date.now()}`,
+      name: options.routeName || '动态 Cost 智能规划航线',
+      description: '基于静态、周期与实时三层数据的动态 Cost A* 航线',
+      duration,
+      points,
+      planned: true,
+      costModel: 'dynamic-v1',
+      dynamicCostSummary: summary,
+      mainRiskFactors: pathRiskFactors,
+      avoidedZones,
       startName: options.startName,
       endName: options.endName,
     },
