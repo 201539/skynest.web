@@ -74,6 +74,47 @@ async function main() {
     assert.equal(rejected.task.status, 'rejected')
     assert.equal(rejected.route, null)
 
+    await assert.rejects(
+      () => taskWorkflowStore.resubmitRejectedTask(rejectedTask.id, sampleTask(), {
+        client,
+        requesterId: 'another-user',
+      }),
+      (error) => error.code === 'PERMISSION_DENIED'
+    )
+
+    const revisedDeadline = new Date(Date.now() + 6 * 3600000).toISOString()
+    const resubmitted = await taskWorkflowStore.resubmitRejectedTask(rejectedTask.id, sampleTask({
+      origin: '南门入口',
+      destination: '食堂',
+      weight_kg: 0.6,
+      deadline: revisedDeadline,
+      special_requirements: ['防水', '轻拿轻放'],
+    }), {
+      client,
+      requesterId: 'verify-user',
+      requester: { name: '流程自测用户', department: '项目组' },
+    })
+    assert.equal(resubmitted.task.id, rejectedTask.id, 'resubmission must keep the original task id')
+    assert.equal(resubmitted.task.status, 'pending_review')
+    assert.equal(resubmitted.task.weight_kg, 0.6)
+    assert.deepEqual(resubmitted.task.special_requirements, ['防水', '轻拿轻放'])
+    assert.equal(resubmitted.approval.decision, 'rejected', 'previous rejection must remain visible')
+    assert.equal(resubmitted.approval.reason, '事务自测驳回')
+
+    await assert.rejects(
+      () => taskWorkflowStore.resubmitRejectedTask(rejectedTask.id, sampleTask(), {
+        client,
+        requesterId: 'verify-user',
+      }),
+      (error) => error.code === 'TASK_NOT_RESUBMITTABLE'
+    )
+    const resubmitAudit = await client.query(
+      `SELECT event_type FROM runtime.audit_events
+       WHERE task_id = $1 AND event_type = 'task_resubmitted'`,
+      [rejectedTask.id]
+    )
+    assert.equal(resubmitAudit.rowCount, 1)
+
     await client.query('ROLLBACK')
     const final = (await client.query(`
       SELECT
@@ -90,6 +131,10 @@ async function main() {
       approved_route_model: approved.route.cost_model,
       approved_route_points: approved.route.waypoints.length,
       rejected_status: rejected.task.status,
+      resubmitted_status: resubmitted.task.status,
+      resubmitted_same_task_id: resubmitted.task.id === rejectedTask.id,
+      previous_rejection_preserved: resubmitted.approval.decision === 'rejected',
+      ownership_protected: true,
       transaction_rolled_back: true,
       persisted_test_rows: { tasks: 0, routes: 0, approvals: 0 },
     }, null, 2))

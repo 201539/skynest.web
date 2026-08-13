@@ -313,6 +313,113 @@ async function createTask(values = {}, options = {}) {
   }
 }
 
+async function resubmitRejectedTask(taskId, values = {}, options = {}) {
+  const id = normalizeTaskId(taskId)
+  const task = validateTask(values)
+  const requesterId = requiredText(options.requesterId, 'requesterId', 100)
+  const client = options.client || await pool.connect()
+  const ownsClient = !options.client
+  try {
+    if (ownsClient) await client.query('BEGIN')
+    const currentResult = await client.query(
+      'SELECT * FROM runtime.tasks WHERE task_id = $1 FOR UPDATE',
+      [id]
+    )
+    if (!currentResult.rowCount) {
+      const error = new Error(`Task ${id} does not exist`)
+      error.code = 'TASK_NOT_FOUND'
+      throw error
+    }
+
+    const current = currentResult.rows[0]
+    if (String(current.requester?.id || '') !== requesterId) {
+      const error = new Error('只能修改本人提交的任务')
+      error.code = 'PERMISSION_DENIED'
+      error.status = 403
+      throw error
+    }
+    if (current.status !== 'rejected') {
+      const error = new Error('只有已驳回的任务可以修改后重新提交')
+      error.code = 'TASK_NOT_RESUBMITTABLE'
+      throw error
+    }
+
+    const result = await client.query(
+      `
+        UPDATE runtime.tasks
+        SET
+          origin = $2,
+          destination = $3,
+          item_category = $4,
+          weight_kg = $5,
+          deadline = $6::timestamptz AT TIME ZONE $16,
+          priority = $7,
+          safety_level = $8,
+          special_requirements = $9::jsonb,
+          recommended_vehicle_class = $10,
+          candidate_node_ids = $11::jsonb,
+          needs_manual_review = $12,
+          missing_fields = $13::jsonb,
+          input_text = $14,
+          agent_analysis = $15::jsonb,
+          status = 'submitted',
+          assigned_drone_id = NULL,
+          assigned_node_id = NULL,
+          updated_at = now()
+        WHERE task_id = $1
+        RETURNING *
+      `,
+      [
+        id,
+        task.origin,
+        task.destination,
+        task.itemCategory,
+        task.weight,
+        task.deadline.toISOString(),
+        task.priority,
+        task.safetyLevel,
+        JSON.stringify(task.specialRequirements),
+        task.recommendedVehicleClass,
+        JSON.stringify(task.candidateNodeIds),
+        task.needsManualReview,
+        JSON.stringify(task.missingFields),
+        task.inputText,
+        task.agentAnalysis ? JSON.stringify(task.agentAnalysis) : null,
+        TIME_ZONE,
+      ]
+    )
+    const saved = normalizeTask(result.rows[0])
+    await auditStore.appendEvent({
+      event_type: 'task_resubmitted',
+      category: 'task',
+      task_id: saved.id,
+      title: '驳回任务已修改并重新提交',
+      description: `${saved.origin}至${saved.destination}的运输任务已根据审核意见修改，并重新进入校方审核。`,
+      actor: {
+        role: 'student',
+        name: options.requester?.name || current.requester?.name || '师生用户',
+        department: options.requester?.department || current.requester?.department || '',
+      },
+      resource: { type: 'task', id: saved.id },
+      metadata: {
+        previous_status: current.status,
+        previous_origin: current.origin,
+        previous_destination: current.destination,
+        item_category: saved.item_category,
+        weight_kg: saved.weight_kg,
+        needs_manual_review: saved.needs_manual_review,
+      },
+    }, { client })
+    if (ownsClient) await client.query('COMMIT')
+    return getTaskWorkspace(id, { client })
+  } catch (error) {
+    if (ownsClient) await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    if (ownsClient) client.release()
+  }
+}
+
 async function listWorkspace(options = {}) {
   const client = options.client || pool
   const result = await client.query(
@@ -458,6 +565,7 @@ async function close() {
 module.exports = {
   validateTask,
   createTask,
+  resubmitRejectedTask,
   listWorkspace,
   getTaskWorkspace,
   reviewTask,

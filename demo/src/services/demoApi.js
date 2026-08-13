@@ -299,6 +299,48 @@ function mockReviewTask(taskId, review = {}) {
   }
 }
 
+function mockResubmitRejectedTask(taskId, values = {}) {
+  const task = mockState.tasks.find((item) => item.id === taskId)
+  if (!task) throw new Error('待修改任务不存在')
+  if (task.status !== TASK_STATUS.REJECTED) throw new Error('只有已驳回的任务可以修改后重新提交')
+
+  const requesterId = authSession?.user?.id
+  if (requesterId && task.requester?.id && task.requester.id !== requesterId) {
+    throw new Error('只能修改本人提交的任务')
+  }
+
+  const previous = {
+    status: task.status,
+    origin: task.origin,
+    destination: task.destination,
+  }
+  Object.assign(task, values, {
+    id: task.id,
+    requester: task.requester,
+    status: TASK_STATUS.PENDING_REVIEW,
+    assigned_drone_id: null,
+    assigned_node_id: null,
+    updated_at: new Date().toISOString(),
+  })
+  appendAuditRecord({
+    event_type: 'task_resubmitted',
+    category: AUDIT_CATEGORY.TASK,
+    task_id: task.id,
+    title: '驳回任务已修改并重新提交',
+    description: `${task.origin}至${task.destination}的运输任务已根据审核意见修改，并重新进入校方审核。`,
+    actor: { role: ROLE.STUDENT, name: task.requester?.name || '师生用户', department: task.requester?.department || '' },
+    resource: { type: 'task', id: task.id },
+    metadata: {
+      previous_status: previous.status,
+      previous_origin: previous.origin,
+      previous_destination: previous.destination,
+    },
+    created_at: task.updated_at,
+  })
+  persistMockState()
+  return buildMockStudentWorkspace().tasks.find((item) => item.task.id === task.id)
+}
+
 const OPERATOR_TASK_STATUSES = new Set([
   TASK_STATUS.APPROVED,
   TASK_STATUS.DISPATCHED,
@@ -830,6 +872,16 @@ export const demoApi = {
         })
         return Promise.resolve(clone(saved))
       },
+    )
+  },
+
+  resubmitRejectedTask(taskId, task) {
+    return withWorkflowMode(
+      () => requestV3Json(`/student/tasks/${encodeURIComponent(taskId)}/resubmit`, {
+        method: 'PUT',
+        body: JSON.stringify(task),
+      }),
+      () => Promise.resolve(clone(mockResubmitRejectedTask(taskId, task))),
     )
   },
 

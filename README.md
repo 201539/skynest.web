@@ -9,7 +9,7 @@ SkyNest 是一个基于 **Vue 3、Cesium、Express、PostgreSQL/PostGIS** 的校
 | 模块 | 当前能力 |
 | --- | --- |
 | 三维校园 | Cesium 场景、本地地形、校园 GLB、无人机 GLB、格网与热力图展示 |
-| 师生端 | 自然语言解析、表单回填、人工确认、任务提交和进度查询 |
+| 师生端 | 自然语言解析、表单回填、人工确认、任务提交、进度查询及驳回后修改重提 |
 | 任务 Agent | 地点匹配、物品识别、V3 机型与高风险规则校验、服务端防篡改复核 |
 | 校方端 | 任务审核、动态航线生成、临时限制区、冲突检测、重规划、安全熔断和审计查询 |
 | 运营端 | 分配无人机和接驳节点、派发、运输、到达、交付及资源释放 |
@@ -156,6 +156,7 @@ npm run dev
 2. 检查 Agent 回填结果、风险提示和模型说明来源。
 3. 人工确认后提交任务。
 4. 在“我的任务”查看审核、派发、运输、到达和交付状态。
+5. 任务被驳回时，根据校方意见修改原任务并使用同一任务编号重新提交。
 
 ### 校方端
 
@@ -203,7 +204,7 @@ DASHSCOPE_MODEL=qwen-plus
 | 数据库 | `GET /api/v3/health`、`GET /api/v3/summary` | V3 状态与表概览 |
 | 静态资源 | `GET /api/v3/nodes`、`/vehicle-rules`、`/high-risk-categories`、`/drones` | 节点、规则和无人机 |
 | Agent | `POST /api/v3/agent/parse`、`GET /api/v3/agent/status`、`PUT /api/v3/agent/config` | 任务解析与解释来源 |
-| 师生任务 | `GET/POST /api/v3/tasks`、`GET /api/v3/student/workspace` | 提交及跟踪 |
+| 师生任务 | `GET/POST /api/v3/tasks`、`GET /api/v3/student/workspace`、`PUT /api/v3/student/tasks/:taskId/resubmit` | 提交、跟踪及驳回后修改重提 |
 | 校方审核 | `GET /api/v3/reviews`、`POST /api/v3/tasks/:taskId/review` | 审核与生成航线 |
 | 运营执行 | `GET /api/v3/operator/workspace`、`POST .../dispatch`、`POST .../advance` | 派发和状态推进 |
 | 动态算法 | `GET /api/v3/grids/bbox`、`POST /api/v3/dynamic-cost/evaluate` | V3 格网与 Cost |

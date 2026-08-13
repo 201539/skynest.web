@@ -44,6 +44,7 @@ function sendQueryError(res, error) {
   ].includes(error.code)
   const conflict = [
     'TASK_ALREADY_REVIEWED', 'TASK_NOT_DISPATCHABLE', 'TASK_ROUTE_MISSING',
+    'TASK_NOT_RESUBMITTABLE',
     'DRONE_UNAVAILABLE', 'DRONE_BATTERY_LOW', 'DRONE_PAYLOAD_EXCEEDED',
     'NODE_UNAVAILABLE', 'NODE_TYPE_INVALID', 'TASK_NOT_ADVANCEABLE',
     'TASK_ASSIGNMENT_MISSING', 'TASK_NOT_REPLANNABLE', 'TASK_ROUTE_CONTEXT_MISSING',
@@ -204,6 +205,25 @@ function createV3Router() {
         },
       })
       res.status(201).json(task)
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.put('/student/tasks/:taskId/resubmit', authService.requireRoles(ROLES.STUDENT), async (req, res) => {
+    try {
+      const verified = await taskAgentService.verifyStructuredTask(req.body || {}, {
+        pool: taskWorkflowStore._pool,
+      })
+      const workspace = await taskWorkflowStore.resubmitRejectedTask(
+        req.params.taskId,
+        { ...(req.body || {}), ...verified },
+        {
+          requesterId: req.auth.user.id,
+          requester: req.auth.user,
+        }
+      )
+      res.json(workspace)
     } catch (error) {
       sendQueryError(res, error)
     }

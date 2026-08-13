@@ -14,6 +14,13 @@
     </div>
 
     <form v-if="workspaceTab === 'submit'" novalidate @submit.prevent="submitTask">
+      <div v-if="editingRejectedTaskId" class="resubmit-banner" role="status">
+        <div>
+          <strong>正在修改已驳回任务</strong>
+          <span>任务 #{{ editingRejectedTaskId }} · 请根据校方意见修改后重新提交</span>
+        </div>
+        <button type="button" :disabled="submitting" @click="cancelRejectedTaskEdit">取消修改</button>
+      </div>
       <label class="form-field full-span">
         <span>自然语言需求 <small>选填</small></span>
         <textarea
@@ -162,9 +169,9 @@
       <div v-if="formError" class="form-error" role="alert">{{ formError }}</div>
 
       <div class="form-actions">
-        <button type="button" class="secondary-btn" :disabled="submitting" @click="resetForm">清空</button>
+        <button type="button" class="secondary-btn" :disabled="submitting" @click="resetForm">{{ editingRejectedTaskId ? '恢复原内容' : '清空' }}</button>
         <button type="submit" class="primary-btn" :disabled="submitting">
-          {{ submitting ? '提交中…' : '提交运输任务' }}
+          {{ submitting ? '提交中…' : editingRejectedTaskId ? '保存修改并重新提交' : '提交运输任务' }}
         </button>
       </div>
     </form>
@@ -244,6 +251,11 @@
             <span>校方审核意见</span>
             <strong>{{ approvalDecisionLabel(selectedStudentTask.approval.decision) }}</strong>
             <p>{{ selectedStudentTask.approval.reason || '暂无补充意见' }}</p>
+          </div>
+
+          <div v-if="selectedStudentTask.task.status === TASK_STATUS.REJECTED" class="rejected-task-actions">
+            <span>原任务和驳回意见会保留，修改后将使用同一任务编号重新进入审核。</span>
+            <button type="button" @click="editRejectedTask(selectedStudentTask)">修改并重新提交</button>
           </div>
 
           <div v-if="selectedStudentTask.route" class="student-route-card">
@@ -332,6 +344,8 @@ const studentWorkspace = ref({ tasks: [] })
 const tasksLoading = ref(false)
 const tasksError = ref('')
 const selectedTaskId = ref('')
+const editingRejectedTaskId = ref(null)
+const rejectedTaskSnapshot = ref(null)
 
 const requiresManualReview = computed(() => highRiskCategories.has(form.item_category))
 const confidenceScore = computed(() => Math.max(0, Math.min(100, Number(agentAnalysis.value?.confidence_score) || 0)))
@@ -541,6 +555,47 @@ function normalizeRequirements() {
     .filter(Boolean)
 }
 
+function fillFormFromTask(task) {
+  Object.assign(form, createEmptyForm(props.currentUser), {
+    ...task,
+    id: task.id,
+    requester: { ...props.currentUser },
+    deadline: normalizeDeadlineForInput(task.deadline),
+    special_requirements: Array.isArray(task.special_requirements) ? [...task.special_requirements] : [],
+    candidate_node_ids: Array.isArray(task.candidate_node_ids) ? [...task.candidate_node_ids] : [],
+    missing_fields: [],
+  })
+  specialRequirementsText.value = (task.special_requirements || []).join('、')
+  agentAnalysis.value = task.agent_analysis || null
+  agentConfirmed.value = false
+  agentConfirmedAt.value = null
+  analysisChanged.value = Boolean(agentAnalysis.value)
+  parseFeedback.value = null
+  parsedFieldLabels.value = []
+  clearErrors()
+}
+
+function editRejectedTask(item) {
+  if (!item || item.task.status !== TASK_STATUS.REJECTED) return
+  editingRejectedTaskId.value = item.task.id
+  rejectedTaskSnapshot.value = {
+    ...item.task,
+    requester: { ...item.task.requester },
+    special_requirements: [...(item.task.special_requirements || [])],
+    candidate_node_ids: [...(item.task.candidate_node_ids || [])],
+  }
+  fillFormFromTask(item.task)
+  lastSubmitted.value = null
+  workspaceTab.value = 'submit'
+  emit('notify', `已载入任务 #${item.task.id}，请根据审核意见修改`)
+}
+
+function cancelRejectedTaskEdit() {
+  editingRejectedTaskId.value = null
+  rejectedTaskSnapshot.value = null
+  resetForm({ preserveRequester: true, forceEmpty: true })
+}
+
 function validateForm() {
   clearErrors()
   const result = validateTransportTask(form)
@@ -598,12 +653,20 @@ async function submitTask() {
   })
 
   try {
-    const saved = await demoApi.submitTask(payload)
+    const editingTaskId = editingRejectedTaskId.value
+    const result = editingTaskId
+      ? await demoApi.resubmitRejectedTask(editingTaskId, payload)
+      : await demoApi.submitTask(payload)
+    const saved = result.task || result
     lastSubmitted.value = saved
     selectedTaskId.value = saved.id
     await loadStudentTasks()
     emit('submitted', saved)
-    emit('notify', `运输任务已提交：${saved.origin} → ${saved.destination}`)
+    emit('notify', editingTaskId
+      ? `任务已修改并重新提交：${saved.origin} → ${saved.destination}`
+      : `运输任务已提交：${saved.origin} → ${saved.destination}`)
+    editingRejectedTaskId.value = null
+    rejectedTaskSnapshot.value = null
     resetForm({ preserveResult: true, preserveRequester: true })
   } catch (error) {
     console.error('任务提交失败', error)
@@ -614,6 +677,10 @@ async function submitTask() {
 }
 
 function resetForm(options = {}) {
+  if (editingRejectedTaskId.value && rejectedTaskSnapshot.value && !options.forceEmpty) {
+    fillFormFromTask(rejectedTaskSnapshot.value)
+    return
+  }
   const requester = options.preserveRequester ? { ...form.requester } : {}
   Object.assign(form, createEmptyForm(requester))
   specialRequirementsText.value = ''
@@ -680,6 +747,24 @@ h2 { margin: 0; font-size: 18px; }
 
 .workspace-tabs button.active { color: #e1f5fe; border-color: #4fc3f7; }
 .workspace-tabs span { padding: 1px 5px; color: #061426; background: #81d4fa; border-radius: 999px; font-size: 8px; }
+
+.resubmit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 9px 10px;
+  color: #ffe0b2;
+  background: rgba(255, 152, 0, 0.09);
+  border: 1px solid rgba(255, 183, 77, 0.28);
+  border-radius: 8px;
+}
+
+.resubmit-banner div { display: flex; flex-direction: column; gap: 2px; }
+.resubmit-banner strong { font-size: 11px; }
+.resubmit-banner span { color: #bcaaa4; font-size: 9px; }
+.resubmit-banner button { padding: 5px 7px; color: #ffcc80; background: transparent; border: 1px solid rgba(255, 183, 77, 0.25); border-radius: 6px; font-size: 9px; cursor: pointer; }
 
 .form-grid {
   display: grid;
@@ -1082,6 +1167,10 @@ input[type='datetime-local'] { color-scheme: dark; }
 .approval-card, .student-route-card { margin-top: 8px; padding: 8px 9px; background: rgba(4, 13, 27, 0.48); border: 1px solid rgba(144, 202, 249, 0.12); border-radius: 7px; }
 .approval-card strong { display: block; margin-top: 3px; color: #d7e4f1; font-size: 10px; }
 .approval-card p { margin: 3px 0 0; color: #90a4ae; font-size: 9px; line-height: 1.4; }
+
+.rejected-task-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 9px; color: #bcaaa4; background: rgba(255, 152, 0, 0.07); border: 1px solid rgba(255, 183, 77, 0.18); border-radius: 7px; }
+.rejected-task-actions span { font-size: 9px; line-height: 1.4; }
+.rejected-task-actions button { flex: 0 0 auto; padding: 6px 8px; color: #4e2f00; font-weight: 700; background: linear-gradient(135deg, #ffe082, #ffb74d); border: 0; border-radius: 6px; font-size: 9px; cursor: pointer; }
 .student-route-card > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
 .student-route-card i { padding: 3px 6px; color: #b3e5fc; background: rgba(3, 169, 244, 0.1); border-radius: 5px; font-size: 8px; font-style: normal; }
 .student-route-card .student-route-heading { align-items: center; justify-content: space-between; margin-top: 0; }

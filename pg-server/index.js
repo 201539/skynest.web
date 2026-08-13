@@ -856,6 +856,7 @@ app.listen(PORT, () => {
   console.log('  PUT /api/v3/agent/config')
   console.log('  GET/POST /api/v3/tasks')
   console.log('  GET /api/v3/student/workspace')
+  console.log('  PUT /api/v3/student/tasks/:taskId/resubmit')
   console.log('  GET /api/v3/tasks/:taskId/route-explanation')
   console.log('  GET /api/v3/reviews')
   console.log('  POST /api/v3/tasks/:taskId/review')
