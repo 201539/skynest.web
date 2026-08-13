@@ -13,12 +13,15 @@ const dynamicReplanService = require('./lib/dynamicReplanService')
 const restrictionStore = require('./lib/restrictionStore')
 const taskWorkflowStore = require('./lib/taskWorkflowStore')
 const auditStore = require('./lib/auditStore')
+const authService = require('./lib/authService')
 const { getLegacyDatabaseConfig } = require('./lib/databaseConfig')
 
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '2mb' }))
 app.use('/api/v3', createV3Router())
+
+const requireSchool = [authService.authenticate, authService.requireRoles(authService.ROLES.SCHOOL)]
 
 const pool = new Pool(getLegacyDatabaseConfig({
   max: 10,
@@ -408,8 +411,8 @@ app.get('/api/places', (_req, res) => {
   res.json({ places, count: places.length, source: 'places.json' })
 })
 
-app.put('/api/places', handleSavePlaces)
-app.post('/api/places/save', handleSavePlaces)
+app.put('/api/places', ...requireSchool, handleSavePlaces)
+app.post('/api/places/save', ...requireSchool, handleSavePlaces)
 
 function handleSavePlaces(req, res) {
   const { places } = req.body || {}
@@ -430,7 +433,7 @@ function handleSavePlaces(req, res) {
   }
 }
 
-app.post('/api/routes/evaluate', async (req, res) => {
+app.post('/api/routes/evaluate', ...requireSchool, async (req, res) => {
   const { points, groundHeight: gh } = req.body || {}
   if (!Array.isArray(points) || points.length < 2) {
     return res.status(400).json({ error: '请提供至少 2 个航点 points[]' })
@@ -446,7 +449,7 @@ app.post('/api/routes/evaluate', async (req, res) => {
   }
 })
 
-app.post('/api/route-plan', async (req, res) => {
+app.post('/api/route-plan', ...requireSchool, async (req, res) => {
   const {
     start,
     end,

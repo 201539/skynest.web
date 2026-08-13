@@ -15,7 +15,8 @@
     "verify-audit-trail": "node verify-audit-trail.js",
     "verify-safety-actions": "node verify-safety-actions.js",
     "verify-route-explanation": "node verify-route-explanation.js",
-    "verify-agent": "node verify-agent.js"
+    "verify-agent": "node verify-agent.js",
+    "verify-auth": "node verify-auth.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

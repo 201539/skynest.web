@@ -3,7 +3,11 @@
 
   <header class="platform-header">
     <div class="header-title">{{ appConfig.title || '仙林校区无人机适航评估平台' }}</div>
-    <RoleSwitcher v-model="activeRole" :roles="ROLE_OPTIONS" :api-mode="demoApiMode" />
+    <div v-if="currentUser" class="session-badge">
+      <span>{{ currentUser.role_label }}</span>
+      <strong>{{ currentUser.name }}</strong>
+      <button type="button" @click="handleLogout">退出</button>
+    </div>
     <div class="header-status">
       <span :class="['status-dot', dbConnected ? 'online' : 'offline']"></span>
       <span v-if="dbConnected">数据库已连接 · {{ gridTotal.toLocaleString() }} 条格网</span>
@@ -19,6 +23,7 @@
 
   <TaskSubmitPanel
     v-if="activeRole === ROLE.STUDENT"
+    :current-user="currentUser"
     @submitted="handleTaskSubmitted"
     @notify="showStatus"
     @view-route="handleViewTaskRoute"
@@ -41,7 +46,7 @@
   />
 
   <RoleOverviewPanel
-    v-else
+    v-else-if="activeRole"
     :role="activeRole"
     :overview="roleOverview"
     :loading="roleOverviewLoading"
@@ -74,7 +79,7 @@
       </div>
     </section>
 
-    <section class="panel-section">
+    <section v-if="activeRole === ROLE.SCHOOL" class="panel-section">
       <h3>智能航线规划</h3>
       <label class="field-label">起点建筑</label>
       <select v-model="planStartName" class="full-width">
@@ -120,7 +125,7 @@
       </div>
     </section>
 
-    <section class="panel-section pick-section" :class="{ active: pickModeActive }">
+    <section v-if="activeRole === ROLE.SCHOOL" class="panel-section pick-section" :class="{ active: pickModeActive }">
       <h3>白模坐标标定</h3>
       <p class="hint">选建筑 → 开始取点 → 点击白模中心（取点后<strong>自动写入</strong>该建筑）</p>
       <label class="field-label">标定建筑</label>
@@ -170,7 +175,7 @@
       <div class="row btn-row">
         <button type="button" @click="replayFlight">重播</button>
         <button type="button" @click="flyToCampus">飞到校区</button>
-        <button type="button" @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
+        <button v-if="activeRole === ROLE.SCHOOL" type="button" @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
       </div>
       <div v-if="routeEvaluation" class="eval-box" :class="routeEvaluation.passable ? 'pass' : 'fail'">
         <div class="eval-title">航线适航评估</div>
@@ -234,6 +239,9 @@
     <div class="progress-fill" :style="{ width: (loadingProgress * 100) + '%' }"></div>
     <span>{{ Math.round(loadingProgress * 100) }}%</span>
   </div>
+
+  <div v-if="!authReady" class="auth-loading">正在验证登录状态…</div>
+  <LoginPanel v-else-if="!currentUser" @authenticated="handleAuthenticated" />
 </template>
 
 <script setup>
@@ -241,11 +249,11 @@ import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import * as Cesium from 'cesium'
 import proj4 from 'proj4'
 import OperatorTaskPanel from './components/OperatorTaskPanel.vue'
+import LoginPanel from './components/LoginPanel.vue'
 import RoleOverviewPanel from './components/RoleOverviewPanel.vue'
-import RoleSwitcher from './components/RoleSwitcher.vue'
 import SchoolReviewPanel from './components/SchoolReviewPanel.vue'
 import TaskSubmitPanel from './components/TaskSubmitPanel.vue'
-import { ROLE, ROLE_OPTIONS } from './domain/contracts'
+import { ROLE } from './domain/contracts'
 import { demoApi } from './services/demoApi'
 
 proj4.defs('EPSG:4490', '+proj=longlat +ellps=GRS80 +no_defs')
@@ -257,11 +265,39 @@ window.CESIUM_BASE_URL = '/'
 
 const API_BASE = '/api'
 
-const activeRole = ref(ROLE.SCHOOL)
+const activeRole = ref('')
+const currentUser = ref(null)
+const authReady = ref(false)
 const roleOverview = ref(null)
 const roleOverviewLoading = ref(false)
 const demoApiMode = demoApi.mode
 let roleOverviewRequestVersion = 0
+
+function handleAuthenticated(session) {
+  currentUser.value = session.user
+  activeRole.value = session.user.role
+  refreshRoleOverview()
+  showStatus(`已登录：${session.user.name} · ${session.user.role_label}`, 3500)
+}
+
+async function handleLogout() {
+  await demoApi.logout()
+  currentUser.value = null
+  activeRole.value = ''
+  roleOverview.value = null
+}
+
+function handleAuthExpired() {
+  currentUser.value = null
+  activeRole.value = ''
+  roleOverview.value = null
+  showStatus('登录状态已失效，请重新登录', 4500)
+}
+
+function authenticatedHeaders(extra = {}) {
+  const token = demoApi.getCurrentSession()?.token
+  return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra }
+}
 
 async function refreshRoleOverview() {
   const requestVersion = ++roleOverviewRequestVersion
@@ -444,7 +480,9 @@ function handleViewRestriction(restriction) {
   showStatus(`已定位限制区：${restriction.name}`, 3500)
 }
 
-watch(activeRole, refreshRoleOverview, { immediate: true })
+watch(activeRole, (role) => {
+  if (role) refreshRoleOverview()
+})
 
 let viewer = null
 let heatmapLayer = null
@@ -1339,14 +1377,14 @@ async function savePlacesToServer() {
   try {
     let res = await fetch(`${API_BASE}/places`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      headers: authenticatedHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
       body: JSON.stringify(payload),
     })
 
     if (res.status === 404) {
       res = await fetch(`${API_BASE}/places/save`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        headers: authenticatedHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
         body: JSON.stringify(payload),
       })
     }
@@ -1420,7 +1458,7 @@ async function planSmartRoute() {
   try {
     const res = await fetch(`${API_BASE}/route-plan`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     })
     const data = await res.json()
@@ -2251,7 +2289,7 @@ async function evaluateCurrentRoute(routeOverride = null) {
     if (route.planned) {
       const res = await fetch(`${API_BASE}/routes/evaluate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           points: route.points,
           groundHeight: groundHeight.value,
@@ -2615,6 +2653,14 @@ function handleGlobalKeyDown(event) {
 }
 
 onMounted(async () => {
+  globalThis.addEventListener('skynest-auth-expired', handleAuthExpired)
+  const session = await demoApi.restoreSession()
+  if (session) {
+    currentUser.value = session.user
+    activeRole.value = session.user.role
+  }
+  authReady.value = true
+
   Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIzNTQ0NDQ2MS01ZWY1LTQ1MTYtYTQxMy0xMGU3MDQ3MTdiOGIiLCJpZCI6MzgwMjU5LCJpYXQiOjE3Njg3MTE4NjN9.2iChjh8X6t7I-ENresR0UqwghQH3KgQYYnB_212G8OY'
 
   await loadAppConfig()
@@ -2668,6 +2714,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  globalThis.removeEventListener('skynest-auth-expired', handleAuthExpired)
   document.removeEventListener('keydown', handleGlobalKeyDown)
   clearTimeout(gridLoadTimer)
   clearInterval(dbCheckTimer)
@@ -2733,6 +2780,35 @@ onUnmounted(() => {
   gap: 6px;
   pointer-events: auto;
   white-space: nowrap;
+}
+
+.session-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 5px 4px 9px;
+  color: #cfe6f9;
+  background: rgba(8, 19, 38, 0.68);
+  border: 1px solid rgba(144, 202, 249, 0.22);
+  border-radius: 9px;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+.session-badge span { color: #4fc3f7; font-size: 10px; }
+.session-badge strong { font-size: 11px; }
+.session-badge button { flex: 0 0 auto; padding: 4px 7px; color: #b0bec5; background: rgba(255, 255, 255, 0.06); font-size: 10px; }
+.session-badge button:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+
+.auth-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 3100;
+  display: grid;
+  place-items: center;
+  color: #b3e5fc;
+  background: #030a17;
+  font-size: 13px;
+  letter-spacing: 1px;
 }
 
 .link-btn {

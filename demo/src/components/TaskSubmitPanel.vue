@@ -97,13 +97,13 @@
 
       <div class="form-grid">
         <label class="form-field">
-          <span>申请人 <small>选填</small></span>
-          <input v-model.trim="form.requester.name" type="text" placeholder="姓名" />
+          <span>申请人</span>
+          <input v-model.trim="form.requester.name" type="text" readonly />
         </label>
 
         <label class="form-field">
-          <span>所属部门 <small>选填</small></span>
-          <input v-model.trim="form.requester.department" type="text" placeholder="院系或业务部门" />
+          <span>所属部门</span>
+          <input v-model.trim="form.requester.department" type="text" readonly />
         </label>
 
         <label class="form-field">
@@ -278,6 +278,9 @@ import { demoApi } from '../services/demoApi'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 
 const emit = defineEmits(['submitted', 'notify', 'view-route'])
+const props = defineProps({
+  currentUser: { type: Object, required: true },
+})
 
 const itemCategories = TASK_ITEM_CATEGORIES
 const highRiskCategories = HIGH_RISK_CATEGORIES
@@ -311,7 +314,7 @@ function createEmptyForm(requester = {}) {
   })
 }
 
-const form = reactive(createEmptyForm())
+const form = reactive(createEmptyForm(props.currentUser))
 const errors = reactive({})
 const specialRequirementsText = ref('')
 const submitting = ref(false)

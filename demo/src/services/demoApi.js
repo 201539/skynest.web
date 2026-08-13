@@ -22,7 +22,39 @@ const requestedMode = import.meta.env.VITE_DEMO_API_MODE || 'mock'
 const requestedSafetyMode = import.meta.env.VITE_V3_SAFETY_MODE || 'real'
 const requestedWorkflowMode = import.meta.env.VITE_V3_WORKFLOW_MODE || 'real'
 const MOCK_STORAGE_KEY = 'skynest-demo-state-v3'
+const AUTH_STORAGE_KEY = 'skynest-auth-session-v1'
 const clone = (value) => JSON.parse(JSON.stringify(value))
+
+function loadAuthSession() {
+  if (typeof globalThis.localStorage === 'undefined') return null
+  try {
+    const session = JSON.parse(globalThis.localStorage.getItem(AUTH_STORAGE_KEY) || 'null')
+    if (!session?.token || !session?.user || new Date(session.expires_at).getTime() <= Date.now()) return null
+    return session
+  } catch {
+    return null
+  }
+}
+
+let authSession = loadAuthSession()
+
+function persistAuthSession(session) {
+  authSession = session
+  if (typeof globalThis.localStorage === 'undefined') return
+  if (session) globalThis.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session))
+  else globalThis.localStorage.removeItem(AUTH_STORAGE_KEY)
+}
+
+function authHeaders() {
+  return authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}
+}
+
+function notifyAuthExpired() {
+  persistAuthSession(null)
+  if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.CustomEvent === 'function') {
+    globalThis.dispatchEvent(new CustomEvent('skynest-auth-expired'))
+  }
+}
 
 function loadMockState() {
   const fallback = createMockDataset()
@@ -76,13 +108,17 @@ async function requestJson(path, options = {}) {
 
 async function requestV3Json(path, options = {}) {
   const response = await fetch(`${V3_API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     ...options,
   })
 
   const data = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new Error(data?.detail || data?.error || `V3接口请求失败：${response.status}`)
+    if (response.status === 401 && !path.startsWith('/auth/login')) notifyAuthExpired()
+    const error = new Error(data?.detail || data?.error || `V3接口请求失败：${response.status}`)
+    error.status = response.status
+    error.code = data?.error || null
+    throw error
   }
   return data
 }
@@ -584,6 +620,44 @@ function mockEmergencyStopTask(taskId, reason = '') {
 
 export const demoApi = {
   mode: requestedWorkflowMode === 'real' ? 'real' : requestedMode,
+
+  getLoginOptions() {
+    return requestV3Json('/auth/options')
+  },
+
+  async login(username, password) {
+    const session = await requestV3Json('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    })
+    persistAuthSession(session)
+    return clone(session)
+  },
+
+  async restoreSession() {
+    if (!authSession) return null
+    try {
+      const result = await requestV3Json('/auth/me')
+      authSession = { ...authSession, user: result.user }
+      persistAuthSession(authSession)
+      return clone(authSession)
+    } catch {
+      persistAuthSession(null)
+      return null
+    }
+  },
+
+  async logout() {
+    try {
+      if (authSession) await requestV3Json('/auth/logout', { method: 'POST' })
+    } finally {
+      persistAuthSession(null)
+    }
+  },
+
+  getCurrentSession() {
+    return authSession ? clone(authSession) : null
+  },
 
   getRoleOverview(role) {
     return withMode(

@@ -9,6 +9,9 @@ const operatorWorkflowStore = require('../lib/operatorWorkflowStore')
 const auditStore = require('../lib/auditStore')
 const safetyActionStore = require('../lib/safetyActionStore')
 const taskAgentService = require('../agent/agentService')
+const authService = require('../lib/authService')
+
+const { ROLES } = authService
 
 function parseQueryNumber(value, fieldName) {
   if (value == null || value === '') return null
@@ -32,6 +35,9 @@ function queryOptions(query) {
 }
 
 function sendQueryError(res, error) {
+  if (error.status) {
+    return res.status(error.status).json({ error: error.code?.toLowerCase() || 'request_failed', detail: error.message })
+  }
   const invalidInput = error instanceof TypeError || error instanceof RangeError
   const notFound = [
     'RESTRICTION_NOT_FOUND', 'TASK_NOT_FOUND', 'DRONE_NOT_FOUND', 'NODE_NOT_FOUND',
@@ -63,6 +69,18 @@ function sendQueryError(res, error) {
 function createV3Router() {
   const router = express.Router()
 
+  router.get('/auth/options', (_req, res) => {
+    res.json(authService.getLoginOptions())
+  })
+
+  router.post('/auth/login', (req, res) => {
+    try {
+      res.json(authService.login(req, req.body?.username, req.body?.password))
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
   router.get('/health', async (_req, res) => {
     try {
       const status = await v3Database.getStatus()
@@ -72,7 +90,18 @@ function createV3Router() {
     }
   })
 
-  router.get('/summary', async (_req, res) => {
+  router.use(authService.authenticate)
+
+  router.get('/auth/me', (req, res) => {
+    res.json({ user: req.auth.user })
+  })
+
+  router.post('/auth/logout', (req, res) => {
+    authService.logout(req)
+    res.status(204).end()
+  })
+
+  router.get('/summary', authService.requireRoles(ROLES.SCHOOL), async (_req, res) => {
     try {
       const tables = await v3Database.getSummary()
       res.json({
@@ -112,7 +141,7 @@ function createV3Router() {
     }
   })
 
-  router.get('/drones', async (req, res) => {
+  router.get('/drones', authService.requireRoles(ROLES.SCHOOL, ROLES.OPERATOR), async (req, res) => {
     try {
       const data = await v3Database.listDrones(queryOptions(req.query))
       res.json({ count: data.length, data })
@@ -121,7 +150,7 @@ function createV3Router() {
     }
   })
 
-  router.post('/agent/parse', async (req, res) => {
+  router.post('/agent/parse', authService.requireRoles(ROLES.STUDENT), async (req, res) => {
     try {
       const data = await taskAgentService.parseInput(req.body?.input_text, {
         pool: taskWorkflowStore._pool,
@@ -140,7 +169,7 @@ function createV3Router() {
     }
   })
 
-  router.put('/agent/config', async (req, res) => {
+  router.put('/agent/config', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       res.json(await taskAgentService.updateModelConfig({
         enabled: req.body?.enabled,
@@ -151,7 +180,7 @@ function createV3Router() {
     }
   })
 
-  router.get('/tasks', async (_req, res) => {
+  router.get('/tasks', authService.requireRoles(ROLES.SCHOOL), async (_req, res) => {
     try {
       const data = await taskWorkflowStore.listWorkspace()
       res.json({ count: data.length, data: data.map((item) => item.task) })
@@ -160,7 +189,7 @@ function createV3Router() {
     }
   })
 
-  router.post('/tasks', async (req, res) => {
+  router.post('/tasks', authService.requireRoles(ROLES.STUDENT), async (req, res) => {
     try {
       const verified = await taskAgentService.verifyStructuredTask(req.body || {}, {
         pool: taskWorkflowStore._pool,
@@ -168,7 +197,11 @@ function createV3Router() {
       const task = await taskWorkflowStore.createTask({
         ...(req.body || {}),
         ...verified,
-        requester: req.body?.requester,
+        requester: {
+          id: req.auth.user.id,
+          name: req.auth.user.name,
+          department: req.auth.user.department,
+        },
       })
       res.status(201).json(task)
     } catch (error) {
@@ -176,9 +209,9 @@ function createV3Router() {
     }
   })
 
-  router.get('/student/workspace', async (_req, res) => {
+  router.get('/student/workspace', authService.requireRoles(ROLES.STUDENT), async (req, res) => {
     try {
-      const tasks = await taskWorkflowStore.listWorkspace()
+      const tasks = await taskWorkflowStore.listWorkspace({ requesterId: req.auth.user.id })
       res.json({ source: 'v3', updated_at: new Date().toISOString(), tasks })
     } catch (error) {
       sendQueryError(res, error)
@@ -188,6 +221,9 @@ function createV3Router() {
   router.get('/tasks/:taskId/route-explanation', async (req, res) => {
     try {
       const workspace = await taskWorkflowStore.getTaskWorkspace(req.params.taskId)
+      if (req.auth.user.role === ROLES.STUDENT && !authService.isTaskOwner(req.auth.user, workspace.task)) {
+        return res.status(403).json({ error: 'permission_denied', detail: '只能查看本人任务的航线说明' })
+      }
       if (!workspace.route) {
         const error = new Error(`Task ${req.params.taskId} does not have an approved route`)
         error.code = 'TASK_ROUTE_MISSING'
@@ -204,7 +240,7 @@ function createV3Router() {
     }
   })
 
-  router.get('/reviews', async (_req, res) => {
+  router.get('/reviews', authService.requireRoles(ROLES.SCHOOL), async (_req, res) => {
     try {
       const data = await taskWorkflowStore.listWorkspace()
       res.json(data)
@@ -213,16 +249,23 @@ function createV3Router() {
     }
   })
 
-  router.post('/tasks/:taskId/review', async (req, res) => {
+  router.post('/tasks/:taskId/review', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
-      const result = await taskWorkflowStore.reviewTask(req.params.taskId, req.body || {})
+      const result = await taskWorkflowStore.reviewTask(req.params.taskId, {
+        ...(req.body || {}),
+        reviewer: {
+          id: req.auth.user.id,
+          name: req.auth.user.name,
+          department: req.auth.user.department,
+        },
+      })
       res.json(result)
     } catch (error) {
       sendQueryError(res, error)
     }
   })
 
-  router.get('/operator/workspace', async (_req, res) => {
+  router.get('/operator/workspace', authService.requireRoles(ROLES.OPERATOR), async (_req, res) => {
     try {
       res.json(await operatorWorkflowStore.getOperatorWorkspace())
     } catch (error) {
@@ -230,7 +273,7 @@ function createV3Router() {
     }
   })
 
-  router.get('/audit', async (req, res) => {
+  router.get('/audit', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       res.json(await auditStore.getWorkspace({ limit: req.query.limit }))
     } catch (error) {
@@ -238,23 +281,29 @@ function createV3Router() {
     }
   })
 
-  router.post('/operator/tasks/:taskId/dispatch', async (req, res) => {
+  router.post('/operator/tasks/:taskId/dispatch', authService.requireRoles(ROLES.OPERATOR), async (req, res) => {
     try {
-      res.json(await operatorWorkflowStore.dispatchTask(req.params.taskId, req.body || {}))
+      res.json(await operatorWorkflowStore.dispatchTask(req.params.taskId, {
+        ...(req.body || {}),
+        actor: req.auth.user.name,
+      }))
     } catch (error) {
       sendQueryError(res, error)
     }
   })
 
-  router.post('/operator/tasks/:taskId/advance', async (req, res) => {
+  router.post('/operator/tasks/:taskId/advance', authService.requireRoles(ROLES.OPERATOR), async (req, res) => {
     try {
-      res.json(await operatorWorkflowStore.advanceTask(req.params.taskId, req.body || {}))
+      res.json(await operatorWorkflowStore.advanceTask(req.params.taskId, {
+        ...(req.body || {}),
+        actor: req.auth.user.name,
+      }))
     } catch (error) {
       sendQueryError(res, error)
     }
   })
 
-  router.get('/grids/bbox', async (req, res) => {
+  router.get('/grids/bbox', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       const data = await v3Database.listGridCells({
         xMin: parseQueryNumber(req.query.xMin, 'xMin'),
@@ -272,7 +321,7 @@ function createV3Router() {
     }
   })
 
-  router.post('/dynamic-cost/evaluate', async (req, res) => {
+  router.post('/dynamic-cost/evaluate', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       const body = req.body || {}
       const bbox = body.bbox || {}
@@ -308,11 +357,11 @@ function createV3Router() {
     }
   })
 
-  router.get('/replanning/status', (_req, res) => {
+  router.get('/replanning/status', authService.requireRoles(ROLES.SCHOOL), (_req, res) => {
     res.json(dynamicReplanService.getStatus())
   })
 
-  router.get('/safety/workspace', async (_req, res) => {
+  router.get('/safety/workspace', authService.requireRoles(ROLES.SCHOOL), async (_req, res) => {
     try {
       const workspace = await restrictionStore.getSafetyWorkspace()
       res.json({
@@ -324,9 +373,12 @@ function createV3Router() {
     }
   })
 
-  router.post('/safety/restrictions', async (req, res) => {
+  router.post('/safety/restrictions', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
-      const restriction = await restrictionStore.createRestriction(req.body || {})
+      const restriction = await restrictionStore.createRestriction({
+        ...(req.body || {}),
+        created_by: req.auth.user,
+      })
       const workspace = await restrictionStore.getSafetyWorkspace()
       res.status(201).json({
         ...workspace,
@@ -338,11 +390,12 @@ function createV3Router() {
     }
   })
 
-  router.patch('/safety/restrictions/:restrictionId', async (req, res) => {
+  router.patch('/safety/restrictions/:restrictionId', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       const restriction = await restrictionStore.setRestrictionActive(
         req.params.restrictionId,
-        req.body?.active
+        req.body?.active,
+        { actor: req.auth.user.name }
       )
       const workspace = await restrictionStore.getSafetyWorkspace()
       res.json({
@@ -355,9 +408,12 @@ function createV3Router() {
     }
   })
 
-  router.delete('/safety/restrictions/:restrictionId', async (req, res) => {
+  router.delete('/safety/restrictions/:restrictionId', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
-      const restriction = await restrictionStore.cancelRestriction(req.params.restrictionId)
+      const restriction = await restrictionStore.cancelRestriction(
+        req.params.restrictionId,
+        { actor: req.auth.user.name }
+      )
       const workspace = await restrictionStore.getSafetyWorkspace()
       res.json({
         ...workspace,
@@ -369,11 +425,11 @@ function createV3Router() {
     }
   })
 
-  router.post('/safety/tasks/:taskId/replan', async (req, res) => {
+  router.post('/safety/tasks/:taskId/replan', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       const workspace = await safetyActionStore.manualReplanTask(
         req.params.taskId,
-        req.body || {}
+        { ...(req.body || {}), actor: req.auth.user.name }
       )
       res.json({
         ...workspace,
@@ -384,11 +440,11 @@ function createV3Router() {
     }
   })
 
-  router.post('/safety/tasks/:taskId/emergency-stop', async (req, res) => {
+  router.post('/safety/tasks/:taskId/emergency-stop', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       const workspace = await safetyActionStore.emergencyStopTask(
         req.params.taskId,
-        req.body || {}
+        { ...(req.body || {}), actor: req.auth.user.name }
       )
       res.json({
         ...workspace,
@@ -399,7 +455,7 @@ function createV3Router() {
     }
   })
 
-  router.post('/replanning/run', async (req, res) => {
+  router.post('/replanning/run', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
       const result = await dynamicReplanService.processDynamicChanges(
         Array.isArray(req.body?.triggers) ? req.body.triggers : [],
@@ -413,6 +469,12 @@ function createV3Router() {
 
   router.get('/tasks/:taskId/routes', async (req, res) => {
     try {
+      if (req.auth.user.role === ROLES.STUDENT) {
+        const workspace = await taskWorkflowStore.getTaskWorkspace(req.params.taskId)
+        if (!authService.isTaskOwner(req.auth.user, workspace.task)) {
+          return res.status(403).json({ error: 'permission_denied', detail: '只能查看本人任务的航线历史' })
+        }
+      }
       const data = await routeStore.listRouteHistory(req.params.taskId)
       res.json({ task_id: Number(req.params.taskId), count: data.length, data })
     } catch (error) {

@@ -318,9 +318,10 @@ async function listWorkspace(options = {}) {
   const result = await client.query(
     `${WORKSPACE_QUERY}
      WHERE ($1::text[] IS NULL OR t.status = ANY($1::text[]))
+       AND ($2::text IS NULL OR t.requester->>'id' = $2)
      ORDER BY t.created_at DESC, t.task_id DESC
      LIMIT 500`,
-    [options.statuses?.length ? options.statuses : null]
+    [options.statuses?.length ? options.statuses : null, options.requesterId || null]
   )
   return result.rows.map(normalizeWorkspaceRow)
 }
