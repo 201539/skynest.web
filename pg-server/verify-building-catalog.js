@@ -56,6 +56,23 @@ async function main() {
       building.altitude_is_placeholder === true
     )))
 
+    const fixedNodes = await v3Database.listFixedNodes({ limit: 100 })
+    assert.equal(fixedNodes.length, 13)
+    assert.deepEqual(
+      fixedNodes.map((node) => node.node_code).sort(),
+      ['hub', 'a', 'b', 'c', 'd', 'e', 'A', 'B', 'C', 'D', 'E', 'F', 'G'].sort(),
+    )
+    assert.equal(fixedNodes.filter((node) => node.node_code === 'hub').length, 1)
+    assert.equal(fixedNodes.filter((node) => /^[a-e]$/.test(node.node_code)).length, 5)
+    assert.equal(fixedNodes.filter((node) => /^[A-G]$/.test(node.node_code)).length, 7)
+    assert.ok(fixedNodes.every((node) => (
+      Number.isFinite(Number(node.location?.lng))
+      && Number.isFinite(Number(node.location?.lat))
+      && (node.node_code === 'hub' || /^[a-e]$/.test(node.node_code)
+        ? node.service_group === 'departure'
+        : node.service_group === 'receiving')
+    )))
+
     const search = await v3Database.searchBuildings('图书馆')
     assert.equal(search[0]?.building_name, '杜厦图书馆')
 
@@ -88,6 +105,7 @@ async function main() {
         nearest_departure: access.departure_nodes[0].node_code,
         nearest_receiving: access.receiving_nodes[0].node_code,
       },
+      node_levels: { l1: 1, l2: 5, l3: 7 },
       referential_integrity: true,
     }, null, 2))
   } finally {

@@ -932,6 +932,7 @@ app.post('/api/route-plan', ...requireSchool, async (req, res) => {
     timeZone,
     taskId,
     persistRoute,
+    accessPoints,
   } = req.body || {}
 
   if (!start?.lng || !start?.lat || !end?.lng || !end?.lat) {
@@ -1022,6 +1023,7 @@ app.post('/api/route-plan', ...requireSchool, async (req, res) => {
         end: endPt,
         startName,
         endName,
+        accessPoints,
         groundHeight,
         minScore: minScore != null ? parseFloat(minScore) : undefined,
         gridSize: gridSize != null ? parseInt(gridSize, 10) : undefined,
@@ -1037,6 +1039,12 @@ app.post('/api/route-plan', ...requireSchool, async (req, res) => {
         plan.route.databaseRouteId = persistedRoute.route_id
         plan.route.taskId = persistedRoute.task_id
       }
+    }
+
+    plan.route.planning_context = {
+      ...(plan.route.planning_context || {}),
+      access_points: accessPoints || null,
+      planned_for: plan.dynamicCost?.sampledAt || planningAt || null,
     }
 
     res.json({

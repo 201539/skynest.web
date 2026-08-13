@@ -111,6 +111,8 @@
       <label class="layer-item"><input type="checkbox" v-model="layers.tileset" @change="toggleTileset" /> 3D Tiles 实景</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.fallbackModel" @change="toggleFallbackModel" /> 简易校园模型</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.buildings" @change="toggleBuildings" /> 校园建筑（GeoJSON）</label>
+      <label class="layer-item"><input type="checkbox" v-model="layers.officialBuildings" @change="toggleOfficialBuildings" /> 正式建筑点位（83）</label>
+      <label class="layer-item"><input type="checkbox" v-model="layers.fixedNodes" @change="toggleFixedNodes" /> 三级运输节点（13）</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.heatmap" @change="toggleHeatmap" /> 热力图</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.grid" @change="toggleGrid" /> 适航格网</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.route" @change="toggleRoute" /> 飞行路径</label>
@@ -222,9 +224,39 @@
     </section>
 
     <section v-else-if="activeRole === ROLE.SCHOOL" class="panel-section official-place-section">
-      <h3>正式建筑坐标</h3>
-      <p class="hint">已从 V3 数据库加载 {{ campusPlaces.length }} 栋建筑，名称和坐标已锁定。</p>
+      <h3>正式校园点位</h3>
+      <p class="hint">已从 V3 数据库加载 {{ campusPlaces.length }} 栋建筑、{{ officialFixedNodes.length }} 个三级运输节点，名称和坐标已锁定。</p>
+      <div class="official-node-summary">
+        <span>L1枢纽 <strong>{{ officialNodeSummary.l1 }}</strong></span>
+        <span>L2机巢 <strong>{{ officialNodeSummary.l2 }}</strong></span>
+        <span>L3接驳箱 <strong>{{ officialNodeSummary.l3 }}</strong></span>
+      </div>
       <p class="hint">白模手工标定仅作为旧数据维护工具，不会覆盖正式点位。</p>
+    </section>
+
+    <section v-if="selectedOfficialFeature" class="panel-section official-feature-section">
+      <div class="official-feature-heading">
+        <h3>{{ selectedOfficialFeature.kind === 'building' ? '建筑点位详情' : '运输节点详情' }}</h3>
+        <button type="button" class="detail-close-btn" @click="selectedOfficialFeature = null">×</button>
+      </div>
+      <template v-if="selectedOfficialFeature.kind === 'building'">
+        <strong class="official-feature-name">{{ selectedOfficialFeature.name }}</strong>
+        <p class="hint">分类：{{ buildingCategoryLabel(selectedOfficialFeature.category) }} · 数据库ID {{ selectedOfficialFeature.buildingId }}</p>
+        <p class="hint">坐标：{{ formatOfficialCoordinate(selectedOfficialFeature) }}</p>
+        <p class="hint">来源：{{ selectedOfficialFeature.sourceDataset || 'V3正式建筑库' }}</p>
+        <div v-if="activeRole === ROLE.SCHOOL" class="row btn-row official-feature-actions">
+          <button type="button" @click="setOfficialBuildingEndpoint(selectedOfficialFeature, 'start')">设为起点</button>
+          <button type="button" @click="setOfficialBuildingEndpoint(selectedOfficialFeature, 'end')">设为终点</button>
+        </div>
+      </template>
+      <template v-else>
+        <strong class="official-feature-name">{{ fixedNodeLevelLabel(selectedOfficialFeature) }} · {{ selectedOfficialFeature.node_name }}</strong>
+        <p class="hint">编号：{{ selectedOfficialFeature.node_code }} · {{ fixedNodeServiceLabel(selectedOfficialFeature) }}</p>
+        <p class="hint">坐标：{{ formatOfficialCoordinate(selectedOfficialFeature.location) }}</p>
+        <p class="hint">容量：{{ selectedOfficialFeature.capacity }} · 状态：{{ selectedOfficialFeature.status === 'active' ? '可用' : selectedOfficialFeature.status }}</p>
+        <p class="hint">{{ selectedOfficialFeature.description || '暂无节点说明' }}</p>
+        <button type="button" class="full-width-btn" @click="focusOfficialFeature(selectedOfficialFeature)">定位此节点</button>
+      </template>
     </section>
 
     <section class="panel-section">
@@ -370,11 +402,15 @@ let roleOverviewRequestVersion = 0
 async function handleAuthenticated(session) {
   currentUser.value = session.user
   activeRole.value = session.user.role
+  await loadCampusPlaces()
   if (session.user.role === ROLE.SCHOOL) {
-    await loadCampusPlaces()
     if (fallbackModelEntity) await alignPlacesToModel()
   } else if (gridDisplayMode.value === 'route-dynamic') {
     resetDynamicGridDisplay({ reloadStatic: true })
+  }
+  if (viewer) {
+    await renderOfficialMapFeatures()
+    setupOfficialFeaturePickHandler()
   }
   refreshRoleOverview()
   showStatus(`已登录：${session.user.name} · ${session.user.role_label}`, 3500)
@@ -386,6 +422,8 @@ async function handleLogout() {
   activeRole.value = ''
   roleOverview.value = null
   resetDynamicGridDisplay()
+  selectedOfficialFeature.value = null
+  clearOfficialAccessHighlights()
 }
 
 function handleAuthExpired() {
@@ -393,6 +431,8 @@ function handleAuthExpired() {
   activeRole.value = ''
   roleOverview.value = null
   resetDynamicGridDisplay()
+  selectedOfficialFeature.value = null
+  clearOfficialAccessHighlights()
   showStatus('登录状态已失效，请重新登录', 4500)
 }
 
@@ -504,6 +544,12 @@ function formatSignedChange(value) {
   return `${number > 0 ? '+' : ''}${number.toFixed(1)}%`
 }
 
+function applyRouteAccessHighlights(route) {
+  const accessPoints = route?.planning_context?.access_points
+  if (!accessPoints) return clearOfficialAccessHighlights()
+  setOfficialAccessHighlights(accessPoints.departure, accessPoints.receiving)
+}
+
 function clearReplanOriginalRoute() {
   if (replanOriginalRouteEntity && viewer) {
     viewer.entities.remove(replanOriginalRouteEntity)
@@ -608,6 +654,8 @@ let tileset3d = null
 let terrainProvider = null
 let fallbackModelEntity = null
 let campusBuildingsDs = null
+let officialBuildingsDs = null
+let officialFixedNodesDs = null
 let routePolylineEntity = null
 let replanOriginalRouteEntity = null
 let droneEntity = null
@@ -628,6 +676,8 @@ let geometryCache = new Map()
 let gridPrimitives = []
 let renderedGridCells = new Map()
 let gridPickHandler = null
+let officialFeaturePickHandler = null
+let officialFeatureByEntityId = new Map()
 
 const appConfig = reactive({ title: '仙林校区无人机适航评估平台' })
 const csvFiles = ref([])
@@ -689,6 +739,9 @@ const evaluating = ref(false)
 
 const campusPlaces = ref([])
 const placesSource = ref('')
+const officialFixedNodes = ref([])
+const selectedOfficialFeature = ref(null)
+const selectedAccessNodes = ref({ departure: null, receiving: null })
 const planStartName = ref('')
 const planEndName = ref('')
 const planFlightHeight = ref(80)
@@ -774,6 +827,8 @@ const layers = reactive({
   tileset: true,
   fallbackModel: true,
   buildings: false,
+  officialBuildings: true,
+  fixedNodes: true,
   heatmap: false,
   grid: true,
   route: false,
@@ -797,10 +852,45 @@ const canPlanRoute = computed(() =>
   )
 )
 const officialBuildingsLoaded = computed(() => placesSource.value === 'v3-buildings' && campusPlaces.value.length === 83)
+const officialNodeSummary = computed(() => officialFixedNodes.value.reduce((summary, node) => {
+  if (node.node_code === 'hub') summary.l1 += 1
+  else if (/^[a-e]$/.test(node.node_code)) summary.l2 += 1
+  else if (/^[A-G]$/.test(node.node_code)) summary.l3 += 1
+  return summary
+}, { l1: 0, l2: 0, l3: 0 }))
 
 watch([planStartName, planEndName], () => {
   refreshPlanUi()
 })
+
+function fixedNodeLevel(node) {
+  if (node?.node_code === 'hub') return 'L1'
+  if (/^[a-e]$/.test(String(node?.node_code || ''))) return 'L2'
+  if (/^[A-G]$/.test(String(node?.node_code || ''))) return 'L3'
+  return '其他'
+}
+
+function fixedNodeLevelLabel(node) {
+  return ({ L1: 'L1综合枢纽', L2: 'L2起飞机巢', L3: 'L3接驳箱' })[fixedNodeLevel(node)] || '运输节点'
+}
+
+function fixedNodeServiceLabel(node) {
+  return node?.service_group === 'departure' ? '起飞服务节点'
+    : node?.service_group === 'receiving' ? '接收服务节点'
+      : '其他节点'
+}
+
+function buildingCategoryLabel(category) {
+  return ({
+    university: '学院/教学楼', school: '学校建筑', dormitory: '宿舍', stadium: '体育场馆', yes: '其他建筑',
+  })[category] || category || '未分类'
+}
+
+function formatOfficialCoordinate(point) {
+  const lng = Number(point?.lng)
+  const lat = Number(point?.lat)
+  return Number.isFinite(lng) && Number.isFinite(lat) ? `${lng.toFixed(6)}, ${lat.toFixed(6)}` : '坐标缺失'
+}
 
 const planSearchBbox = computed(() => {
   if (!planStartPlace.value || !planEndPlace.value) return null
@@ -942,6 +1032,19 @@ function showPlanMarkers(start, end) {
   addMarker(end, Cesium.Color.ORANGE, `终点：${end.name}`)
 }
 
+function clearOfficialAccessHighlights() {
+  selectedAccessNodes.value = { departure: null, receiving: null }
+  refreshOfficialNodeStyles()
+}
+
+function setOfficialAccessHighlights(departure, receiving) {
+  selectedAccessNodes.value = {
+    departure: departure?.node_code || null,
+    receiving: receiving?.node_code || null,
+  }
+  refreshOfficialNodeStyles()
+}
+
 function clearPlanPreviewLine() {
   if (planPreviewEntity && viewer) {
     viewer.entities.remove(planPreviewEntity)
@@ -979,6 +1082,7 @@ function invalidatePlannedRouteIfStale() {
   selectedRouteId.value = ''
   planResult.value = null
   routeEvaluation.value = null
+  clearOfficialAccessHighlights()
   resetDynamicGridDisplay({ reloadStatic: true })
   showStatus('起终点已变更，请重新点击 A* 生成航线', 4500)
 }
@@ -1053,7 +1157,7 @@ function resolvePlacesFromModelLocal(layout, entity = null) {
 
   return layout.map((p) => {
     if (p.lng != null && p.lat != null && p.eastMeters == null && p.northMeters == null) {
-      return { name: p.name, lng: p.lng, lat: p.lat, height: p.height || 80 }
+      return { ...p, name: p.name, lng: Number(p.lng), lat: Number(p.lat), height: p.height || 80 }
     }
     const east = p.eastMeters ?? (p.nx != null ? p.nx * 400 : 0)
     const north = p.northMeters ?? (p.ny != null ? p.ny * 400 : 0)
@@ -1066,6 +1170,7 @@ function resolvePlacesFromModelLocal(layout, entity = null) {
     )
     const carto = Cesium.Cartographic.fromCartesian(world)
     return {
+      ...p,
       name: p.name,
       lng: Cesium.Math.toDegrees(carto.longitude),
       lat: Cesium.Math.toDegrees(carto.latitude),
@@ -1180,7 +1285,10 @@ async function alignPlacesToModel() {
 
 async function loadCampusPlaces() {
   try {
-    const buildings = await demoApi.listBuildings()
+    const [buildings, nodes] = await Promise.all([
+      demoApi.listBuildings(),
+      demoApi.listFixedNodes(),
+    ])
     if (Array.isArray(buildings) && buildings.length === 83) {
       placeLayoutRaw = buildings.map((building) => ({
         name: building.building_name,
@@ -1189,10 +1297,15 @@ async function loadCampusPlaces() {
         height: appConfig.routePlan?.defaultFlightHeight || 80,
         buildingId: building.building_id,
         category: building.category,
+        sourceDataset: building.source_dataset,
         source: 'v3-buildings',
       }))
       campusPlaces.value = resolvePlacesFromModelLocal(placeLayoutRaw, null)
       placesSource.value = 'v3-buildings'
+      officialFixedNodes.value = Array.isArray(nodes) ? nodes : []
+      if (officialFixedNodes.value.length !== 13) {
+        throw new Error(`V3正式节点数量异常：${officialFixedNodes.value.length}`)
+      }
       planStartName.value = campusPlaces.value.find((place) => place.name === '环境学院')?.name
         || campusPlaces.value[0]?.name || ''
       planEndName.value = campusPlaces.value.find((place) => place.name === '杜厦图书馆')?.name
@@ -1205,8 +1318,12 @@ async function loadCampusPlaces() {
     throw new Error(`V3正式建筑数量异常：${buildings.length}`)
   } catch (officialError) {
     console.warn('V3正式建筑列表加载失败', officialError)
+    if (viewer) clearOfficialMapFeatures()
     placeLayoutRaw = []
     campusPlaces.value = []
+    officialFixedNodes.value = []
+    selectedOfficialFeature.value = null
+    selectedAccessNodes.value = { departure: null, receiving: null }
     planStartName.value = ''
     planEndName.value = ''
     placesSource.value = ''
@@ -1696,11 +1813,14 @@ async function planSmartRoute() {
         { name: `${start.name} · ${routeStart.node_code}`, ...startLocation },
         { name: `${end.name} · ${routeEnd.node_code}`, ...endLocation },
       )
+      setOfficialAccessHighlights(routeStart, routeEnd)
     } catch (error) {
       showStatus(`建筑接入点匹配失败：${error.message}`, 7000)
       planning.value = false
       return
     }
+  } else {
+    clearOfficialAccessHighlights()
   }
 
   const payload = {
@@ -1716,6 +1836,10 @@ async function planSmartRoute() {
     useDynamicCost: true,
     costProfile: 'balanced',
     planningAt: new Date().toISOString(),
+    accessPoints: officialBuildingsLoaded.value ? {
+      departure: { ...routeStart, building_name: start.name },
+      receiving: { ...routeEnd, building_name: end.name },
+    } : null,
   }
 
   try {
@@ -1731,6 +1855,11 @@ async function planSmartRoute() {
     routeEvaluation.value = data.evaluation || null
 
     const planned = data.route
+    planned.planning_context = {
+      ...(planned.planning_context || {}),
+      access_points: payload.accessPoints,
+      planned_for: payload.planningAt,
+    }
     routes.value = routes.value.filter((r) => !r.planned)
     routes.value.unshift(planned)
     selectedRouteId.value = planned.id
@@ -2516,6 +2645,7 @@ async function loadRoutesFromApi() {
 function onRouteSelect() {
   if (!selectedRouteId.value) {
     clearFlightEntities()
+    clearOfficialAccessHighlights()
     routeEvaluation.value = null
     resetDynamicGridDisplay({ reloadStatic: true })
     return
@@ -2756,6 +2886,7 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
   const route = routeOverride || currentRoute.value
   if (!route || !viewer) return
   clearFlightEntities()
+  applyRouteAccessHighlights(route)
 
   const pathData = buildFlightPathFromRoute(route)
   if (pathData.positions.length < 2) return
@@ -3041,6 +3172,16 @@ async function toggleBuildings() {
   if (campusBuildingsDs) campusBuildingsDs.show = layers.buildings
 }
 
+async function toggleOfficialBuildings() {
+  if (layers.officialBuildings && !officialBuildingsDs) await renderOfficialMapFeatures()
+  if (officialBuildingsDs) officialBuildingsDs.show = layers.officialBuildings
+}
+
+async function toggleFixedNodes() {
+  if (layers.fixedNodes && !officialFixedNodesDs) await renderOfficialMapFeatures()
+  if (officialFixedNodesDs) officialFixedNodesDs.show = layers.fixedNodes
+}
+
 async function toggleHeatmap() {
   if (layers.heatmap) {
     if (!selectedFile.value) {
@@ -3078,6 +3219,194 @@ function toggleGrid() {
     gridAbortController?.abort()
     clearAllGrids()
   }
+}
+
+function officialBuildingPointColor(category) {
+  if (category === 'dormitory') return Cesium.Color.fromCssColorString('#42a5f5')
+  if (category === 'stadium') return Cesium.Color.fromCssColorString('#ff8a65')
+  if (category === 'school' || category === 'university') return Cesium.Color.fromCssColorString('#7e57c2')
+  return Cesium.Color.fromCssColorString('#90a4ae')
+}
+
+function officialNodeColor(node) {
+  const level = fixedNodeLevel(node)
+  if (level === 'L1') return Cesium.Color.fromCssColorString('#e91e63')
+  if (level === 'L2') return Cesium.Color.fromCssColorString('#fb8c00')
+  if (level === 'L3') return Cesium.Color.fromCssColorString('#00acc1')
+  return Cesium.Color.GRAY
+}
+
+function officialNodeEntityId(node) {
+  return `official-node:${node.node_code}`
+}
+
+function officialNodeIsHighlighted(node) {
+  return selectedAccessNodes.value.departure === node.node_code
+    || selectedAccessNodes.value.receiving === node.node_code
+}
+
+function clearOfficialMapFeatures() {
+  if (!viewer || viewer.isDestroyed()) return
+  if (officialBuildingsDs) viewer.dataSources.remove(officialBuildingsDs, true)
+  if (officialFixedNodesDs) viewer.dataSources.remove(officialFixedNodesDs, true)
+  officialBuildingsDs = null
+  officialFixedNodesDs = null
+  officialFeatureByEntityId = new Map()
+  selectedOfficialFeature.value = null
+}
+
+function createOfficialBuildingDataSource() {
+  const source = new Cesium.CustomDataSource('V3正式建筑点位')
+  campusPlaces.value.forEach((place) => {
+    const id = `official-building:${place.buildingId || place.name}`
+    const feature = {
+      kind: 'building',
+      name: place.name,
+      buildingId: place.buildingId,
+      category: place.category,
+      sourceDataset: place.sourceDataset,
+      lng: Number(place.lng),
+      lat: Number(place.lat),
+    }
+    officialFeatureByEntityId.set(id, feature)
+    source.entities.add({
+      id,
+      name: place.name,
+      position: Cesium.Cartesian3.fromDegrees(feature.lng, feature.lat, 8),
+      point: {
+        pixelSize: 7,
+        color: officialBuildingPointColor(place.category).withAlpha(0.95),
+        outlineColor: Cesium.Color.WHITE.withAlpha(0.85),
+        outlineWidth: 1,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 6500),
+      },
+      label: {
+        text: place.name,
+        font: '11px Microsoft YaHei, sans-serif',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cesium.Cartesian2(0, -15),
+        showBackground: true,
+        backgroundColor: Cesium.Color.fromBytes(4, 18, 35, 180),
+        backgroundPadding: new Cesium.Cartesian2(5, 3),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 1150),
+        scaleByDistance: new Cesium.NearFarScalar(300, 1, 1150, 0.72),
+      },
+    })
+  })
+  return source
+}
+
+function createOfficialNodeDataSource() {
+  const source = new Cesium.CustomDataSource('V3三级运输节点')
+  officialFixedNodes.value.forEach((node) => {
+    const id = officialNodeEntityId(node)
+    const feature = { kind: 'node', ...node }
+    const color = officialNodeColor(node)
+    const highlighted = officialNodeIsHighlighted(node)
+    officialFeatureByEntityId.set(id, feature)
+    source.entities.add({
+      id,
+      name: node.node_name,
+      position: Cesium.Cartesian3.fromDegrees(Number(node.location.lng), Number(node.location.lat), 12),
+      point: {
+        pixelSize: highlighted ? 18 : fixedNodeLevel(node) === 'L1' ? 16 : 13,
+        color,
+        outlineColor: highlighted ? Cesium.Color.LIME : Cesium.Color.WHITE,
+        outlineWidth: highlighted ? 4 : 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text: `${node.node_code} · ${fixedNodeLevel(node)}`,
+        font: highlighted ? 'bold 14px Microsoft YaHei, sans-serif' : 'bold 12px Microsoft YaHei, sans-serif',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cesium.Cartesian2(0, -23),
+        showBackground: true,
+        backgroundColor: color.withAlpha(highlighted ? 0.95 : 0.78),
+        backgroundPadding: new Cesium.Cartesian2(6, 4),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 9000),
+      },
+    })
+  })
+  return source
+}
+
+async function renderOfficialMapFeatures() {
+  if (!viewer || viewer.isDestroyed() || !officialBuildingsLoaded.value || officialFixedNodes.value.length !== 13) return false
+  clearOfficialMapFeatures()
+  officialBuildingsDs = createOfficialBuildingDataSource()
+  officialFixedNodesDs = createOfficialNodeDataSource()
+  await Promise.all([
+    viewer.dataSources.add(officialBuildingsDs),
+    viewer.dataSources.add(officialFixedNodesDs),
+  ])
+  officialBuildingsDs.show = layers.officialBuildings
+  officialFixedNodesDs.show = layers.fixedNodes
+  return true
+}
+
+function refreshOfficialNodeStyles() {
+  if (!officialFixedNodesDs) return
+  officialFixedNodes.value.forEach((node) => {
+    const entity = officialFixedNodesDs.entities.getById(officialNodeEntityId(node))
+    if (!entity?.point || !entity.label) return
+    const highlighted = officialNodeIsHighlighted(node)
+    const color = officialNodeColor(node)
+    entity.point.pixelSize = highlighted ? 18 : fixedNodeLevel(node) === 'L1' ? 16 : 13
+    entity.point.outlineColor = highlighted ? Cesium.Color.LIME : Cesium.Color.WHITE
+    entity.point.outlineWidth = highlighted ? 4 : 2
+    entity.label.font = highlighted ? 'bold 14px Microsoft YaHei, sans-serif' : 'bold 12px Microsoft YaHei, sans-serif'
+    entity.label.backgroundColor = color.withAlpha(highlighted ? 0.95 : 0.78)
+  })
+}
+
+function setupOfficialFeaturePickHandler() {
+  if (!viewer || officialFeaturePickHandler) return
+  officialFeaturePickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
+  officialFeaturePickHandler.setInputAction((movement) => {
+    if (pickModeActive.value || !currentUser.value) return
+    const picked = viewer.scene.pick(movement.position)
+    const entityId = typeof picked?.id?.id === 'string' ? picked.id.id : typeof picked?.id === 'string' ? picked.id : null
+    const feature = entityId ? officialFeatureByEntityId.get(entityId) : null
+    if (!feature) return
+    selectedOfficialFeature.value = feature
+    if (feature.kind === 'node') focusOfficialFeature(feature, { silent: true })
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
+}
+
+function destroyOfficialFeaturePickHandler() {
+  if (officialFeaturePickHandler && !officialFeaturePickHandler.isDestroyed()) officialFeaturePickHandler.destroy()
+  officialFeaturePickHandler = null
+}
+
+function focusOfficialFeature(feature, options = {}) {
+  if (!viewer || viewer.isDestroyed()) return
+  const location = feature.kind === 'node' ? feature.location : feature
+  const lng = Number(location?.lng)
+  const lat = Number(location?.lat)
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(lng, lat, feature.kind === 'node' ? 420 : 520),
+    orientation: { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
+    duration: 1,
+  })
+  if (!options.silent) showStatus(`已定位：${feature.kind === 'node' ? feature.node_name : feature.name}`, 3000)
+}
+
+function setOfficialBuildingEndpoint(feature, endpoint) {
+  if (feature?.kind !== 'building') return
+  if (endpoint === 'start') planStartName.value = feature.name
+  else planEndName.value = feature.name
+  focusOfficialFeature(feature)
+  showStatus(`已将${feature.name}设为${endpoint === 'start' ? '起点' : '终点'}建筑`, 3500)
 }
 
 function toggleRoute() {
@@ -3251,7 +3580,7 @@ onMounted(async () => {
   await Promise.all([
     loadHotspotsIndex(),
     loadRoutesFromApi(),
-    currentUser.value?.role === ROLE.SCHOOL ? loadCampusPlaces() : Promise.resolve(false),
+    currentUser.value ? loadCampusPlaces() : Promise.resolve(false),
     checkDatabase(),
     loadAdminTasks(),
   ])
@@ -3278,6 +3607,7 @@ onMounted(async () => {
     await alignPlacesToModel()
   }
   if (layers.buildings && !layers.fallbackModel) await setupCampusBuildings()
+  if (officialBuildingsLoaded.value && officialFixedNodes.value.length === 13) await renderOfficialMapFeatures()
 
   clearFlightEntities()
   clearPlanSearchBbox()
@@ -3290,6 +3620,7 @@ onMounted(async () => {
   await new Promise((r) => setTimeout(r, 2500))
   refreshPlanUi()
   setupGridPickHandler()
+  setupOfficialFeaturePickHandler()
 
   cameraMoveHandler = viewer.camera.moveEnd.addEventListener(scheduleGridReload)
   if (layers.grid) await reloadGridsInView()
@@ -3318,11 +3649,13 @@ onUnmounted(() => {
   clearInterval(adminTaskTimer)
   destroyPickHandler()
   destroyGridPickHandler()
+  destroyOfficialFeaturePickHandler()
   clearPickMarker()
   clearPlanPreviewLine()
   clearPlanSearchBbox()
   clearPlanMarkers()
   clearRestrictionEntities()
+  clearOfficialMapFeatures()
   gridAbortController?.abort()
   if (cameraMoveHandler) cameraMoveHandler()
   if (viewer && !viewer.isDestroyed()) viewer.destroy()
@@ -3597,6 +3930,20 @@ select {
 .warn-hint {
   color: #ffb74d;
 }
+
+.official-node-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 8px; }
+.official-node-summary span { display: flex; flex-direction: column; gap: 2px; padding: 6px 3px; color: #90a4ae; text-align: center; background: rgba(33, 150, 243, 0.08); border-radius: 5px; font-size: 9px; }
+.official-node-summary strong { color: #81d4fa; font-size: 12px; }
+.official-node-summary span:nth-child(1) { border-top: 2px solid #e91e63; }
+.official-node-summary span:nth-child(2) { border-top: 2px solid #fb8c00; }
+.official-node-summary span:nth-child(3) { border-top: 2px solid #00acc1; }
+.official-feature-section { padding: 10px; background: rgba(0, 172, 193, 0.06); border: 1px solid rgba(0, 188, 212, 0.25); border-radius: 7px; }
+.official-feature-heading { display: flex; align-items: center; justify-content: space-between; }
+.official-feature-heading h3 { margin-bottom: 5px; }
+.detail-close-btn { flex: 0 0 auto; padding: 0 4px; color: #90a4ae; background: transparent; font-size: 16px; }
+.official-feature-name { display: block; color: #e0f7fa; font-size: 12px; line-height: 1.45; }
+.official-feature-actions button:first-child { background: #2e7d32; }
+.official-feature-actions button:last-child { background: #ef6c00; }
 
 .field-label {
   display: block;
