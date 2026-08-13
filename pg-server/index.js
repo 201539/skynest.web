@@ -6,24 +6,37 @@ const path = require('path')
 const fs = require('fs')
 const { Pool } = require('pg')
 const { computeSearchBbox, planRoute } = require('./lib/routePlanner')
-const { createV3Router } = require('./routes/v3')
-const v3Database = require('./lib/v3Database')
-const routeStore = require('./lib/routeStore')
-const dynamicReplanService = require('./lib/dynamicReplanService')
-const restrictionStore = require('./lib/restrictionStore')
-const taskWorkflowStore = require('./lib/taskWorkflowStore')
-const auditStore = require('./lib/auditStore')
-const authService = require('./lib/authService')
-const { getLegacyDatabaseConfig } = require('./lib/databaseConfig')
-
+const { planTaskRoute } = require('./demo/routeOrchestrator')
+const mockProvider = require('./demo/mockProvider')
+const { parseTaskMock } = require('./agent/taskParser')
+const { processTask, processStructuredTask } = require('./agent/taskOrchestrator')
+const { TASK_STATUS } = require('./demo/taskState')
+const {
+  createDemoTask,
+  getDemoTask,
+  getDemoTaskEvents,
+  listDemoTasks,
+  transitionDemoTask,
+  saveDemoTaskRoute,
+  applyProviderUpdate,
+  completeDemoPickup,
+  resetDemoData,
+  toStudentView,
+  toAdminView,
+  toEnterpriseView,
+} = require('./demo/taskService')
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '2mb' }))
-app.use('/api/v3', createV3Router())
+app.use('/student', express.static(path.join(__dirname, 'public', 'student')))
+app.use('/enterprise', express.static(path.join(__dirname, 'public', 'enterprise')))
 
-const requireSchool = [authService.authenticate, authService.requireRoles(authService.ROLES.SCHOOL)]
-
-const pool = new Pool(getLegacyDatabaseConfig({
+const pool = new Pool({
+  host: process.env.PG_HOST || 'localhost',
+  port: parseInt(process.env.PG_PORT || '5432', 10),
+  user: process.env.PG_USER || 'postgres',
+  password: process.env.PG_PASSWORD || '',
+  database: process.env.PG_DATABASE || 'nanjing_uni_grid_score',
   max: 10,
 }))
 
@@ -130,15 +143,19 @@ function estimateGridCount(bbox, cellSize) {
 }
 
 function chooseGridLod(requestedLod, estimatedCount, limit, availableLods) {
+  const supportedLods = [...new Set([1, ...availableLods, ...GRID_LOD_LEVELS])]
+    .filter((lod) => Number.isFinite(lod) && lod >= 1)
+    .sort((a, b) => a - b)
+
   if (requestedLod !== 'auto') {
     const parsed = parseInt(requestedLod, 10)
-    if (parsed === 1 || availableLods.includes(parsed)) return parsed
+    if (supportedLods.includes(parsed)) return parsed
   }
 
-  for (const lod of [1, ...availableLods]) {
+  for (const lod of supportedLods) {
     if (estimatedCount / Math.pow(lod, 3) <= limit) return lod
   }
-  return availableLods.at(-1) || 1
+  return supportedLods.at(-1) || 1
 }
 
 function alignGridBounds(bbox, metadata, lod) {
@@ -411,8 +428,453 @@ app.get('/api/places', (_req, res) => {
   res.json({ places, count: places.length, source: 'places.json' })
 })
 
-app.put('/api/places', ...requireSchool, handleSavePlaces)
-app.post('/api/places/save', ...requireSchool, handleSavePlaces)
+
+app.put('/api/places', handleSavePlaces)
+// AI Agent：将用户自然语言解析为结构化配送任务
+app.post('/api/agent/parse-task', (req, res) => {
+  const { message } = req.body || {}
+
+  if (typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({
+      ok: false,
+      error: '请提供非空的 message',
+    })
+  }
+
+  try {
+    const taskDraft = parseTaskMock(message)
+
+    const canSubmitToAlgorithm =
+      taskDraft.missing_fields.length === 0 &&
+      !taskDraft.needs_manual_review
+
+    return res.json({
+      ok: true,
+      mode: 'mock',
+      task_draft: taskDraft,
+      can_submit_to_algorithm: canSubmitToAlgorithm,
+    })
+  } catch (error) {
+    console.error('Agent task parsing failed:', error)
+
+    return res.status(400).json({
+      ok: false,
+      error: error.message || '任务解析失败',
+    })
+  }
+})
+
+// AI Agent：解析需求、匹配校园节点、推荐机型并生成下一步建议
+app.post('/api/agent/process-task', (req, res) => {
+  const { message, task } = req.body || {}
+
+  if ((!task || typeof task !== 'object') && (typeof message !== 'string' || !message.trim())) {
+    return res.status(400).json({
+      ok: false,
+      error: '请提供 task 对象或非空的 message',
+    })
+  }
+
+  try {
+    const isStructuredForm = task && typeof task === 'object'
+    const result = isStructuredForm
+      ? processStructuredTask(task, loadPlaces())
+      : processTask(message, loadPlaces())
+
+    return res.json({
+      ok: true,
+      mode: isStructuredForm ? 'structured-form' : 'mock',
+      ...result,
+    })
+  } catch (error) {
+    console.error('Agent task processing failed:', error)
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message || '任务处理失败',
+    })
+  }
+})
+
+function getTaskInput(body = {}) {
+  return body.task && typeof body.task === 'object' ? body.task : body
+}
+
+function getTaskId(req) {
+  const id = String(req.params.id || '').trim()
+  if (!id) {
+    const error = new Error('缺少任务 ID')
+    error.statusCode = 400
+    throw error
+  }
+  return id
+}
+
+function sendDemoTaskError(res, error) {
+  if (error.code === 'TASK_NOT_FOUND') {
+    return res.status(404).json({ ok: false, error: '任务不存在' })
+  }
+  const isClientError = error.statusCode === 400 || /必要信息|未匹配|不允许任务从/.test(error.message || '')
+  return res.status(isClientError ? 400 : 500).json({
+    ok: false,
+    error: error.message || '任务处理失败',
+  })
+}
+
+async function createAndSaveTaskRoute(task) {
+  const routeResult = await planTaskRoute({
+    pool,
+    task,
+    places: loadPlaces(),
+    groundHeight: GROUND_HEIGHT,
+    generateDemoGrids,
+    evaluateRoutePoints,
+  })
+  const updatedTask = await saveDemoTaskRoute(pool, task.id, routeResult)
+  return { task: updatedTask, routeResult }
+}
+
+// 学生端：创建结构化运输需求并立即保存 Agent 分析结果。
+app.post('/api/demo/tasks', async (req, res) => {
+  try {
+    const taskInput = getTaskInput(req.body || {})
+    const agentResult = processStructuredTask(taskInput, loadPlaces())
+    const task = await createDemoTask(pool, {
+      agentResult,
+      requester: req.body?.requester || req.body,
+    })
+    return res.status(201).json({
+      ok: true,
+      task: toStudentView(task),
+      agent_result: agentResult,
+    })
+  } catch (error) {
+    console.error('[demo create task]', error)
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 学生端：查看本人任务的精简字段。
+app.get('/api/demo/tasks/:id', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    return res.json({ ok: true, task: toStudentView(task) })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 学生端：查看配送时间线。
+app.get('/api/demo/tasks/:id/events', async (req, res) => {
+  try {
+    const id = getTaskId(req)
+    const task = await getDemoTask(pool, id)
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const events = await getDemoTaskEvents(pool, id)
+    return res.json({ ok: true, events })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 学生端：确认 Agent 结果后，将任务送入校方审批队列。
+app.post('/api/demo/tasks/:id/submit', async (req, res) => {
+  try {
+    const task = await transitionDemoTask(pool, getTaskId(req), TASK_STATUS.PENDING_APPROVAL, {
+      eventType: 'submitted_for_approval',
+      title: '已提交校方审核',
+      detail: '任务已进入校方审批队列。',
+      source: 'student',
+    })
+    return res.json({ ok: true, task: toStudentView(task) })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 学生端：到达后凭取件码确认取件，后端会连续写入“已取件”和“已完成”两条事件。
+app.post('/api/demo/tasks/:id/pickup', async (req, res) => {
+  try {
+    const task = await completeDemoPickup(pool, getTaskId(req), req.body?.pickup_code)
+    return res.json({ ok: true, task: toStudentView(task) })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 校方端：查看完整任务队列和 Agent 结果。
+app.get('/api/admin/demo/tasks', async (req, res) => {
+  try {
+    const status = String(req.query.status || '').trim() || undefined
+    const tasks = await listDemoTasks(pool, { status, limit: req.query.limit })
+    return res.json({ ok: true, tasks: tasks.map(toAdminView), count: tasks.length })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 企业端：只展示已通过校方审核、可进入或已经进入企业履约阶段的任务。
+app.get('/api/enterprise/demo/tasks', async (req, res) => {
+  try {
+    const enterpriseStatuses = new Set([
+      TASK_STATUS.APPROVED,
+      TASK_STATUS.PROVIDER_ACCEPTED,
+      TASK_STATUS.READY_FOR_TAKEOFF,
+      TASK_STATUS.IN_FLIGHT,
+      TASK_STATUS.ARRIVED,
+      TASK_STATUS.PICKED_UP,
+      TASK_STATUS.COMPLETED,
+      TASK_STATUS.EXCEPTION,
+    ])
+    const tasks = await listDemoTasks(pool, { limit: req.query.limit || 100 })
+    const visibleTasks = tasks.filter((task) => enterpriseStatuses.has(task.status))
+    return res.json({ ok: true, tasks: visibleTasks.map(toEnterpriseView), count: visibleTasks.length, sandbox: true })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 企业端沙箱：接受校方已批准且已生成推荐通道的配送任务。
+app.post('/api/enterprise/demo/tasks/:id/accept', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const waybill = mockProvider.createWaybill(task)
+    const updated = await applyProviderUpdate(pool, task.id, {
+      nextStatus: TASK_STATUS.PROVIDER_ACCEPTED,
+      provider: {
+        code: waybill.provider.code,
+        name: waybill.provider.name,
+        orderNo: waybill.provider_order_no,
+        vehicle: waybill.provider_vehicle,
+        status: waybill.provider_status,
+        telemetry: waybill.telemetry,
+      },
+      event: {
+        eventType: 'provider_accepted',
+        title: '企业沙箱已接单',
+        detail: `企业端沙箱已生成运单 ${waybill.provider_order_no}，不代表真实企业订单。`,
+        source: 'provider_sandbox',
+        payload: {
+          environment: waybill.provider.environment,
+          provider_order_no: waybill.provider_order_no,
+          provider_vehicle: waybill.provider_vehicle,
+        },
+      },
+    })
+    return res.json({ ok: true, task: toEnterpriseView(updated), sandbox: true })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 企业端沙箱：依次推进起飞准备、飞行中和到达接驳点状态。
+app.post('/api/enterprise/demo/tasks/:id/advance', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const next = mockProvider.advanceStatus(task)
+    const updated = await applyProviderUpdate(pool, task.id, {
+      nextStatus: next.task_status,
+      provider: {
+        status: next.provider_status,
+        telemetry: next.telemetry,
+        ...(next.pickup_code ? { pickupCode: next.pickup_code } : {}),
+      },
+      event: {
+        eventType: `provider_${next.provider_status.toLowerCase()}`,
+        title: next.title,
+        detail: next.detail,
+        source: 'provider_sandbox',
+        payload: { environment: 'mock', provider_status: next.provider_status },
+      },
+    })
+    return res.json({ ok: true, task: toEnterpriseView(updated), sandbox: true })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+app.get('/api/admin/demo/tasks/:id', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const events = await getDemoTaskEvents(pool, task.id)
+    return res.json({ ok: true, task: toAdminView(task), events })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+app.post('/api/admin/demo/tasks/:id/approve', async (req, res) => {
+  try {
+    const approvedTask = await transitionDemoTask(pool, getTaskId(req), TASK_STATUS.APPROVED, {
+      eventType: 'approved',
+      title: '校方审核通过',
+      detail: String(req.body?.comment || '校方确认该任务可进入企业运力匹配阶段。'),
+      source: 'admin',
+    })
+
+    try {
+      const { task, routeResult } = await createAndSaveTaskRoute(approvedTask)
+      return res.json({
+        ok: true,
+        task: toAdminView(task),
+        route_planning: { ok: true, route: routeResult },
+      })
+    } catch (routeError) {
+      // 审批已成功提交；规划故障不应把校方操作伪装成失败。
+      console.warn('任务已批准，但推荐通道生成失败:', routeError.message)
+      return res.json({
+        ok: true,
+        task: toAdminView(approvedTask),
+        route_planning: {
+          ok: false,
+          error: routeError.message || '推荐通道生成失败，请稍后重试。',
+          retry_endpoint: `/api/admin/demo/tasks/${approvedTask.id}/plan-route`,
+        },
+      })
+    }
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 路线规划失败后，校方可在“已批准、尚未派单”阶段重试；不会绕过审批或改写任务状态。
+app.post('/api/admin/demo/tasks/:id/plan-route', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const result = await createAndSaveTaskRoute(task)
+    return res.json({
+      ok: true,
+      task: toAdminView(result.task),
+      route_planning: { ok: true, route: result.routeResult },
+    })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 校方端：将已批准且已生成校园推荐通道的任务发送给企业沙箱。
+app.post('/api/admin/demo/tasks/:id/dispatch', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const waybill = mockProvider.createWaybill(task)
+    const updated = await applyProviderUpdate(pool, task.id, {
+      nextStatus: TASK_STATUS.PROVIDER_ACCEPTED,
+      provider: {
+        code: waybill.provider.code,
+        name: waybill.provider.name,
+        orderNo: waybill.provider_order_no,
+        vehicle: waybill.provider_vehicle,
+        status: waybill.provider_status,
+        telemetry: waybill.telemetry,
+      },
+      event: {
+        eventType: 'provider_accepted',
+        title: '企业沙箱已接单',
+        detail: `沙箱企业已生成运单 ${waybill.provider_order_no}，不代表真实企业订单。`,
+        source: 'provider_sandbox',
+        payload: {
+          environment: waybill.provider.environment,
+          provider_order_no: waybill.provider_order_no,
+          provider_vehicle: waybill.provider_vehicle,
+        },
+      },
+    })
+    return res.json({ ok: true, task: toAdminView(updated), sandbox: true })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 校方端：推进企业沙箱的起飞准备、飞行中和到达状态。
+app.post('/api/admin/demo/tasks/:id/advance', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const next = mockProvider.advanceStatus(task)
+    const updated = await applyProviderUpdate(pool, task.id, {
+      nextStatus: next.task_status,
+      provider: {
+        status: next.provider_status,
+        telemetry: next.telemetry,
+        ...(next.pickup_code ? { pickupCode: next.pickup_code } : {}),
+      },
+      event: {
+        eventType: `provider_${next.provider_status.toLowerCase()}`,
+        title: next.title,
+        detail: next.detail,
+        source: 'provider_sandbox',
+        payload: { environment: 'mock', provider_status: next.provider_status },
+      },
+    })
+    return res.json({ ok: true, task: toAdminView(updated), sandbox: true })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 路演结束后使用。必须传 confirmation: RESET_SKYNEST_DEMO，且只清空两张 Demo 业务表。
+app.post('/api/admin/demo/reset', async (req, res) => {
+  try {
+    if (req.body?.confirmation !== 'RESET_SKYNEST_DEMO') {
+      const error = new Error('为防止误清空，请传入 confirmation: RESET_SKYNEST_DEMO')
+      error.statusCode = 400
+      throw error
+    }
+    const result = await resetDemoData(pool)
+    return res.json({ ok: true, ...result, scope: 'demo_tasks + demo_task_events only' })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+// 校方端：仅用于路演展示异常分支，永远不会控制真实无人机。
+app.post('/api/admin/demo/tasks/:id/exception', async (req, res) => {
+  try {
+    const task = await getDemoTask(pool, getTaskId(req))
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+    const exception = mockProvider.simulateException(task, req.body?.reason)
+    const updated = await applyProviderUpdate(pool, task.id, {
+      nextStatus: exception.task_status,
+      provider: {
+        status: exception.provider_status,
+        telemetry: exception.telemetry,
+        exceptionReason: exception.exception_reason,
+      },
+      event: {
+        eventType: 'provider_exception',
+        title: exception.title,
+        detail: exception.detail,
+        source: 'provider_sandbox',
+        payload: { environment: 'mock', reason: exception.exception_reason },
+      },
+    })
+    return res.json({ ok: true, task: toAdminView(updated), sandbox: true })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+app.post('/api/admin/demo/tasks/:id/reject', async (req, res) => {
+  try {
+    const task = await transitionDemoTask(pool, getTaskId(req), TASK_STATUS.REJECTED, {
+      eventType: 'rejected',
+      title: '校方审核未通过',
+      detail: String(req.body?.comment || '当前任务不满足校园低空配送条件。'),
+      source: 'admin',
+    })
+    return res.json({ ok: true, task: toAdminView(task) })
+  } catch (error) {
+    return sendDemoTaskError(res, error)
+  }
+})
+
+app.post('/api/places/save', handleSavePlaces)
 
 function handleSavePlaces(req, res) {
   const { places } = req.body || {}
@@ -648,8 +1110,9 @@ app.get('/api/grids/bbox', async (req, res) => {
     const zMax = req.query.zMax != null ? parseFloat(req.query.zMax) : null
     const scoreMin = req.query.scoreMin != null ? parseFloat(req.query.scoreMin) : null
     const scoreMax = req.query.scoreMax != null ? parseFloat(req.query.scoreMax) : null
-    const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 6000, 20000))
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 6000, 80000))
     const requestedLod = req.query.lod || 'auto'
+    const surfaceProjection = req.query.surface === '1' || req.query.surface === 'true'
 
     if ([xMin, xMax, yMin, yMax].some((v) => !Number.isFinite(v))) {
       return res.status(400).json({ error: '缺少有效的 bbox 参数 (xMin,xMax,yMin,yMax)' })
@@ -685,10 +1148,10 @@ app.get('/api/grids/bbox', async (req, res) => {
 
     const estimatedRawCount = estimateGridCount(clipped, metadata.cellSize)
     let lod = chooseGridLod(requestedLod, estimatedRawCount, limit, metadata.availableLods)
-    if (lod > 1 && !metadata.availableLods.includes(lod)) lod = 1
+    const usePrecomputedLod = lod > 1 && metadata.availableLods.includes(lod)
     const bbox = alignGridBounds(clipped, metadata, lod)
 
-    const cacheKey = JSON.stringify({ bbox, lod, limit, scoreMin, scoreMax })
+    const cacheKey = JSON.stringify({ bbox, lod, limit, scoreMin, scoreMax, surfaceProjection })
     const cached = getCachedGridResult(cacheKey)
     if (cached) {
       res.set('Cache-Control', 'private, max-age=15')
@@ -697,7 +1160,45 @@ app.get('/api/grids/bbox', async (req, res) => {
 
     const startedAt = Date.now()
     let result
-    if (lod === 1) {
+    if (surfaceProjection && usePrecomputedLod) {
+      result = await pool.query(
+        `
+        SELECT
+          MIN(x_min) AS x_min,
+          MAX(x_max) AS x_max,
+          MIN(y_min) AS y_min,
+          MAX(y_max) AS y_max,
+          MIN(z_min) AS z_min,
+          MAX(z_max) AS z_max,
+          AVG(static_suitability_score) AS static_suitability_score,
+          MIN(min_suitability_score) AS min_suitability_score,
+          MAX(max_suitability_score) AS max_suitability_score,
+          SUM(source_count)::integer AS source_count
+        FROM nanjing_uni_3d_grid_lod
+        WHERE lod = $1
+          AND x_min >= $2 AND x_min <= $3
+          AND y_min >= $4 AND y_min <= $5
+          AND z_min >= $6 AND z_min <= $7
+          AND ($8::double precision IS NULL OR static_suitability_score >= $8)
+          AND ($9::double precision IS NULL OR static_suitability_score <= $9)
+        GROUP BY x_min, x_max, y_min, y_max
+        ORDER BY MIN(x_min), MIN(y_min)
+        LIMIT $10
+        `,
+        [
+          lod,
+          bbox.xMin - metadata.cellSize.x * lod * 1.01,
+          bbox.xMax,
+          bbox.yMin - metadata.cellSize.y * lod * 1.01,
+          bbox.yMax,
+          bbox.zMin - metadata.cellSize.z * lod * 1.01,
+          bbox.zMax,
+          scoreMin,
+          scoreMax,
+          limit,
+        ]
+      )
+    } else if (lod === 1) {
       result = await pool.query(
         `
         SELECT
@@ -725,7 +1226,7 @@ app.get('/api/grids/bbox', async (req, res) => {
           limit,
         ]
       )
-    } else {
+    } else if (usePrecomputedLod) {
       result = await pool.query(
         `
         SELECT
@@ -757,6 +1258,60 @@ app.get('/api/grids/bbox', async (req, res) => {
           limit,
         ]
       )
+    } else {
+      const bucketX = metadata.cellSize.x * lod
+      const bucketY = metadata.cellSize.y * lod
+      const bucketZ = metadata.cellSize.z * lod
+      result = await pool.query(
+        `
+        WITH matched AS (
+          SELECT
+            x_min, x_max, y_min, y_max, z_min, z_max,
+            static_suitability_score,
+            FLOOR((x_min - $10) / $13)::integer AS gx,
+            FLOOR((y_min - $11) / $14)::integer AS gy,
+            FLOOR((z_min - $12) / $15)::integer AS gz
+          FROM nanjing_uni_3d_grid_new
+          WHERE x_min >= $1 AND x_min <= $2
+            AND y_min >= $3 AND y_min <= $4
+            AND z_min >= $5 AND z_min <= $6
+            AND ($7::double precision IS NULL OR static_suitability_score >= $7)
+            AND ($8::double precision IS NULL OR static_suitability_score <= $8)
+        )
+        SELECT
+          MIN(x_min) AS x_min,
+          MAX(x_max) AS x_max,
+          MIN(y_min) AS y_min,
+          MAX(y_max) AS y_max,
+          MIN(z_min) AS z_min,
+          MAX(z_max) AS z_max,
+          AVG(static_suitability_score) AS static_suitability_score,
+          MIN(static_suitability_score) AS min_suitability_score,
+          MAX(static_suitability_score) AS max_suitability_score,
+          COUNT(*) AS source_count
+        FROM matched
+        GROUP BY gx, gy, gz
+        ORDER BY MIN(x_min), MIN(y_min), MIN(z_min)
+        LIMIT $9
+        `,
+        [
+          bbox.xMin - metadata.cellSize.x * lod * 1.01,
+          bbox.xMax,
+          bbox.yMin - metadata.cellSize.y * lod * 1.01,
+          bbox.yMax,
+          bbox.zMin - metadata.cellSize.z * lod * 1.01,
+          bbox.zMax,
+          scoreMin,
+          scoreMax,
+          limit,
+          metadata.bounds.xMin,
+          metadata.bounds.yMin,
+          metadata.bounds.zMin,
+          bucketX,
+          bucketY,
+          bucketZ,
+        ]
+      )
     }
 
     const sourceCount = result.rows.reduce(
@@ -772,6 +1327,8 @@ app.get('/api/grids/bbox', async (req, res) => {
       limit,
       lod,
       aggregated: lod > 1,
+      dynamicAggregated: lod > 1 && !usePrecomputedLod,
+      surfaceProjection,
       estimatedRawCount,
       truncated: result.rows.length === limit,
       queryMs: Date.now() - startedAt,

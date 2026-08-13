@@ -3,11 +3,7 @@
 
   <header class="platform-header">
     <div class="header-title">{{ appConfig.title || '仙林校区无人机适航评估平台' }}</div>
-    <div v-if="currentUser" class="session-badge">
-      <span>{{ currentUser.role_label }}</span>
-      <strong>{{ currentUser.name }}</strong>
-      <button type="button" @click="handleLogout">退出</button>
-    </div>
+    <button type="button" class="portal-home-button" @click="returnToRolePortal">角色首页</button>
     <div class="header-status">
       <span :class="['status-dot', dbConnected ? 'online' : 'offline']"></span>
       <span v-if="dbConnected">数据库已连接 · {{ gridTotal.toLocaleString() }} 条格网</span>
@@ -53,6 +49,62 @@
   />
 
   <aside class="side-panel">
+    <section class="panel-section admin-task-section">
+      <div class="admin-title-row">
+        <h3>校方任务中心</h3>
+        <button type="button" class="admin-refresh-btn" @click="loadAdminTasks(true)" :disabled="adminLoading">刷新</button>
+      </div>
+      <p class="hint">校方审核校园侧合规与空间适配；企业订单、遥测均为沙箱仿真。</p>
+      <div class="admin-metrics">
+        <div><span>待审</span><strong>{{ adminTaskCounts.pending }}</strong></div>
+        <div><span>飞行中</span><strong>{{ adminTaskCounts.flying }}</strong></div>
+        <div><span>已完成</span><strong>{{ adminTaskCounts.completed }}</strong></div>
+      </div>
+      <select v-model="adminStatusFilter" class="full-width" @change="loadAdminTasks()">
+        <option value="">全部演示任务</option>
+        <option value="PENDING_APPROVAL">待校方审核</option>
+        <option value="APPROVED">已批准待派单</option>
+        <option value="IN_FLIGHT">配送飞行中</option>
+        <option value="EXCEPTION">配送异常</option>
+        <option value="COMPLETED">已完成</option>
+      </select>
+      <div class="admin-task-list">
+        <button
+          v-for="task in adminTasks"
+          :key="task.id"
+          type="button"
+          class="admin-task-item"
+          :class="{ selected: task.id === selectedAdminTaskId }"
+          @click="selectAdminTask(task.id)"
+        >
+          <span><strong>{{ task.origin_text }} → {{ task.destination_text }}</strong><small>{{ task.request_no }}</small></span>
+          <em :class="adminStatusClass(task.status)">{{ task.status_label }}</em>
+        </button>
+        <p v-if="!adminLoading && !adminTasks.length" class="hint">当前筛选条件下暂无任务</p>
+      </div>
+      <div v-if="selectedAdminTask" class="admin-task-detail">
+        <div class="admin-detail-head"><strong>{{ selectedAdminTask.item_category }} · {{ selectedAdminTask.weight_kg }}kg</strong><span>{{ selectedAdminTask.priority === 'high' ? '高优先级' : '常规任务' }}</span></div>
+        <p>AI 建议：{{ selectedAdminTask.agent_result?.explanation || selectedAdminTask.agent_summary || '—' }}</p>
+        <p v-if="selectedAdminTask.route_result">路线：{{ selectedAdminTask.route_result.algorithm }} · {{ selectedAdminTask.route_result.totalLengthMeters }}m · {{ selectedAdminTask.route_result.route?.points?.length || 0 }} 航点</p>
+        <p v-if="selectedAdminTask.provider_display_name" class="sandbox-text">{{ selectedAdminTask.provider_display_name }} · {{ selectedAdminTask.provider_order_no || '尚未生成运单' }}</p>
+        <div class="admin-action-row">
+          <button v-if="selectedAdminTask.status === 'PENDING_APPROVAL'" type="button" class="approve-btn" @click="runAdminTaskAction('approve')" :disabled="Boolean(adminActionLoading)">批准并生成路线</button>
+          <button v-if="selectedAdminTask.status === 'PENDING_APPROVAL'" type="button" class="reject-btn" @click="runAdminTaskAction('reject')" :disabled="Boolean(adminActionLoading)">驳回</button>
+          <button v-if="selectedAdminTask.status === 'APPROVED'" type="button" class="dispatch-btn" @click="runAdminTaskAction('dispatch')" :disabled="Boolean(adminActionLoading)">匹配企业沙箱</button>
+          <button v-if="canAdvanceAdminTask" type="button" class="advance-btn" @click="runAdminTaskAction('advance')" :disabled="Boolean(adminActionLoading)">推进至下一阶段</button>
+          <button v-if="canSimulateAdminException" type="button" class="exception-btn" @click="runAdminTaskAction('exception')" :disabled="Boolean(adminActionLoading)">模拟异常</button>
+          <button v-if="selectedAdminTask.route_result" type="button" class="show-route-btn" @click="showSelectedAdminTaskRoute" :disabled="Boolean(adminActionLoading)">在三维地图展示</button>
+        </div>
+        <div v-if="selectedAdminTask.telemetry" class="telemetry-box">
+          <span>沙箱进度 {{ selectedAdminTask.telemetry.progress_percent ?? 0 }}%</span>
+          <span>{{ selectedAdminTask.telemetry.provider_status || '待派单' }}</span>
+        </div>
+        <div v-if="adminTaskEvents.length" class="admin-events">
+          <div v-for="event in adminTaskEvents.slice(-4)" :key="event.id">• {{ event.title }}</div>
+        </div>
+      </div>
+    </section>
+
     <section class="panel-section">
       <h3>图层控制</h3>
       <label class="layer-item"><input type="checkbox" v-model="layers.terrain" @change="toggleTerrain" /> 本地地形</label>
@@ -125,7 +177,71 @@
       </div>
     </section>
 
-    <section v-if="activeRole === ROLE.SCHOOL" class="panel-section pick-section" :class="{ active: pickModeActive }">
+    <section class="panel-section agent-section">
+      <h3>AI Agent 任务申请</h3>
+      <p class="hint">表单保证必填信息完整；Agent匹配校园节点、推荐机型并说明是否可进入航线规划。</p>
+
+      <label class="field-label">起点建筑</label>
+      <select v-model="agentForm.origin" class="full-width">
+        <option value="" disabled>请选择起点</option>
+        <option v-for="p in campusPlaces" :key="'agent-origin-' + p.name" :value="p.name">{{ p.name }}</option>
+      </select>
+
+      <label class="field-label">终点建筑</label>
+      <select v-model="agentForm.destination" class="full-width">
+        <option value="" disabled>请选择终点</option>
+        <option v-for="p in campusPlaces" :key="'agent-destination-' + p.name" :value="p.name">{{ p.name }}</option>
+      </select>
+
+      <label class="field-label">运输物品</label>
+      <select v-model="agentForm.itemCategory" class="full-width">
+        <option v-for="item in agentCategoryOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+      </select>
+
+      <label class="field-label">重量（公斤）</label>
+      <input v-model.number="agentForm.weightKg" class="full-width form-input" type="number" min="0.1" step="0.1" placeholder="例如 2.5" />
+
+      <label class="field-label">期望送达时间</label>
+      <input v-model="agentForm.deadline" class="full-width form-input" type="datetime-local" />
+
+      <label class="field-label">任务优先级</label>
+      <select v-model="agentForm.priority" class="full-width">
+        <option value="normal">常规任务</option>
+        <option value="high">紧急任务</option>
+      </select>
+
+      <label class="field-label">运输要求（可多选）</label>
+      <label v-for="item in agentRequirementOptions" :key="item.value" class="agent-check-item">
+        <input v-model="agentForm.specialRequirements" type="checkbox" :value="item.value" />
+        {{ item.label }}
+      </label>
+
+      <button type="button" class="full-width-btn agent-submit-btn" @click="submitAgentTask" :disabled="agentSubmitting || !agentFormComplete">
+        {{ agentSubmitting ? 'Agent分析中...' : '提交任务并生成建议' }}
+      </button>
+      <p v-if="!agentFormComplete" class="hint warn-hint">请完整选择起终点、物品、重量和期望送达时间。</p>
+
+      <div v-if="agentResult" class="eval-box" :class="agentResult.can_submit_to_algorithm ? 'pass' : 'fail'">
+        <div class="eval-title">Agent 任务预审 · {{ agentWorkflowLabel(agentResult.workflow_status) }}</div>
+        <div>节点：{{ agentResult.location_matches?.origin?.selected_node?.name || '待确认' }} → {{ agentResult.location_matches?.destination?.selected_node?.name || '待确认' }}</div>
+        <div>推荐机型：{{ agentResult.vehicle_recommendation?.vehicle?.label || '需人工审核' }}</div>
+        <div>说明：{{ agentResult.explanation }}</div>
+        <div v-if="agentResult.clarifying_questions?.length" class="agent-questions">
+          <div v-for="question in agentResult.clarifying_questions" :key="question">• {{ question }}</div>
+        </div>
+        <button
+          v-if="agentResult.can_submit_to_algorithm"
+          type="button"
+          class="full-width-btn agent-route-btn"
+          @click="applyAgentTaskToRoutePlanner"
+          :disabled="planning"
+        >
+          {{ planning ? '航线规划中...' : '确认并调用 A* 航线规划' }}
+        </button>
+      </div>
+    </section>
+
+    <section class="panel-section pick-section" :class="{ active: pickModeActive }">
       <h3>白模坐标标定</h3>
       <p class="hint">选建筑 → 开始取点 → 点击白模中心（取点后<strong>自动写入</strong>该建筑）</p>
       <label class="field-label">标定建筑</label>
@@ -502,6 +618,7 @@ let pickHandler = null
 let pickMarkerEntity = null
 let gridLoadTimer = null
 let dbCheckTimer = null
+let adminTaskTimer = null
 let cameraMoveHandler = null
 let gridAbortController = null
 let gridRequestVersion = 0
@@ -567,6 +684,41 @@ const planEndName = ref('')
 const planFlightHeight = ref(80)
 const planning = ref(false)
 const planResult = ref(null)
+const agentSubmitting = ref(false)
+const agentResult = ref(null)
+const adminTasks = ref([])
+const adminLoading = ref(false)
+const adminStatusFilter = ref('')
+const selectedAdminTaskId = ref('')
+const adminTaskDetail = ref(null)
+const adminTaskEvents = ref([])
+const adminActionLoading = ref('')
+const TASK_STATUS_PROVIDER_ACCEPTED = 'PROVIDER_ACCEPTED'
+const agentForm = reactive({
+  origin: '',
+  destination: '',
+  itemCategory: 'document',
+  weightKg: null,
+  deadline: '',
+  priority: 'normal',
+  specialRequirements: [],
+})
+const agentCategoryOptions = [
+  { value: 'document', label: '文件资料' },
+  { value: 'book', label: '图书教材' },
+  { value: 'experimental_material', label: '实验材料' },
+  { value: 'medicine', label: '药品' },
+  { value: 'meal', label: '餐食外卖' },
+  { value: 'medical_sample', label: '医疗样本（需人工审核）' },
+  { value: 'biological_material', label: '生物材料（需人工审核）' },
+]
+const agentRequirementOptions = [
+  { value: 'shockproof', label: '防震' },
+  { value: 'cold_chain', label: '冷链' },
+  { value: 'temperature_controlled', label: '恒温' },
+  { value: 'fragile', label: '易碎' },
+  { value: 'waterproof', label: '防水' },
+]
 const pickModeActive = ref(false)
 const pickModeLoading = ref(false)
 const pickTargetName = ref('')
@@ -633,6 +785,34 @@ const canPlanRoute = computed(() =>
     planStartName.value !== planEndName.value
   )
 )
+const agentFormComplete = computed(() =>
+  Boolean(
+    agentForm.origin &&
+    agentForm.destination &&
+    agentForm.itemCategory &&
+    Number(agentForm.weightKg) > 0 &&
+    agentForm.deadline
+  )
+)
+const selectedAdminTask = computed(() => {
+  if (adminTaskDetail.value?.id === selectedAdminTaskId.value) return adminTaskDetail.value
+  return adminTasks.value.find((task) => task.id === selectedAdminTaskId.value) || null
+})
+const adminTaskCounts = computed(() => ({
+  pending: adminTasks.value.filter((task) => task.status === 'PENDING_APPROVAL').length,
+  flying: adminTasks.value.filter((task) => task.status === 'IN_FLIGHT').length,
+  completed: adminTasks.value.filter((task) => task.status === 'COMPLETED').length,
+}))
+const canAdvanceAdminTask = computed(() => [
+  TASK_STATUS_PROVIDER_ACCEPTED,
+  'READY_FOR_TAKEOFF',
+  'IN_FLIGHT',
+].includes(selectedAdminTask.value?.status))
+const canSimulateAdminException = computed(() => [
+  TASK_STATUS_PROVIDER_ACCEPTED,
+  'READY_FOR_TAKEOFF',
+  'IN_FLIGHT',
+].includes(selectedAdminTask.value?.status))
 
 watch([planStartName, planEndName], () => {
   refreshPlanUi()
@@ -1032,6 +1212,12 @@ async function loadCampusPlaces() {
       campusPlaces.value = resolvePlacesFromModelLocal(placeLayoutRaw, null)
       planStartName.value = campusPlaces.value[0]?.name || ''
       planEndName.value = campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
+      if (!agentForm.origin || !campusPlaces.value.find((p) => p.name === agentForm.origin)) {
+        agentForm.origin = campusPlaces.value[0]?.name || ''
+      }
+      if (!agentForm.destination || !campusPlaces.value.find((p) => p.name === agentForm.destination)) {
+        agentForm.destination = campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
+      }
       if (!pickTargetName.value || !campusPlaces.value.find((p) => p.name === pickTargetName.value)) {
         pickTargetName.value = campusPlaces.value[0]?.name || ''
       }
@@ -1416,6 +1602,75 @@ async function savePlacesToServer() {
   }
 }
 
+function agentWorkflowLabel(status) {
+  const labels = {
+    ready_for_algorithm: '可进入路径规划',
+    needs_clarification: '需要补充信息',
+    needs_location_confirmation: '需要确认地点',
+    needs_manual_review: '需要人工审核',
+  }
+  return labels[status] || '处理中'
+}
+
+function buildAgentRawRequest() {
+  const category = agentCategoryOptions.find((item) => item.value === agentForm.itemCategory)?.label || '物资'
+  const requirements = agentForm.specialRequirements.length
+    ? `，要求${agentForm.specialRequirements.map((value) => agentRequirementOptions.find((item) => item.value === value)?.label).filter(Boolean).join('、')}`
+    : ''
+  return `请于${agentForm.deadline}前，将${agentForm.weightKg}公斤${category}从${agentForm.origin}送到${agentForm.destination}${requirements}`
+}
+
+async function submitAgentTask() {
+  if (!agentFormComplete.value || agentSubmitting.value) return
+
+  agentSubmitting.value = true
+  agentResult.value = null
+
+  const task = {
+    raw_request: buildAgentRawRequest(),
+    origin_text: agentForm.origin,
+    destination_text: agentForm.destination,
+    item_category: agentForm.itemCategory,
+    weight_kg: Number(agentForm.weightKg),
+    deadline: agentForm.deadline,
+    priority: agentForm.priority,
+    special_requirements: agentForm.specialRequirements,
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/agent/process-task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `任务处理失败 ${res.status}`)
+
+    agentResult.value = data
+    showStatus(data.can_submit_to_algorithm ? 'Agent预审通过，可进入路径规划' : 'Agent已生成下一步处理建议', 5000)
+  } catch (e) {
+    console.error('Agent任务处理失败', e)
+    showStatus(`Agent任务处理失败：${e.message}`, 6000)
+  } finally {
+    agentSubmitting.value = false
+  }
+}
+
+async function applyAgentTaskToRoutePlanner() {
+  if (!agentResult.value?.can_submit_to_algorithm) return
+
+  const origin = agentResult.value.location_matches?.origin?.selected_node?.name
+  const destination = agentResult.value.location_matches?.destination?.selected_node?.name
+  if (!origin || !destination) {
+    showStatus('Agent未返回可靠的起终点节点，暂不能规划航线', 5000)
+    return
+  }
+
+  planStartName.value = origin
+  planEndName.value = destination
+  await planSmartRoute()
+}
+
 async function planSmartRoute() {
   if (!canPlanRoute.value || planning.value) return
   const start = planStartPlace.value
@@ -1485,9 +1740,144 @@ async function planSmartRoute() {
   }
 }
 
+async function fetchDemoApi(url, options = {}) {
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `${url} ${res.status}`)
+  }
+  return data
+}
+
+function adminStatusClass(status) {
+  if (status === 'PENDING_APPROVAL') return 'status-pending'
+  if (status === 'APPROVED') return 'status-approved'
+  if (status === 'IN_FLIGHT') return 'status-flying'
+  if (status === 'EXCEPTION') return 'status-exception'
+  if (status === 'COMPLETED') return 'status-completed'
+  return 'status-default'
+}
+
+async function loadAdminTaskDetail(id) {
+  if (!id) return
+  const data = await fetchDemoApi(`${API_BASE}/admin/demo/tasks/${id}`)
+  adminTaskDetail.value = data.task
+  adminTaskEvents.value = data.events || []
+  const index = adminTasks.value.findIndex((task) => task.id === id)
+  if (index >= 0) adminTasks.value.splice(index, 1, data.task)
+}
+
+async function loadAdminTasks(showToast = false) {
+  if (adminLoading.value) return
+  adminLoading.value = true
+  try {
+    const params = new URLSearchParams({ limit: '50' })
+    if (adminStatusFilter.value) params.set('status', adminStatusFilter.value)
+    const data = await fetchDemoApi(`${API_BASE}/admin/demo/tasks?${params}`)
+    adminTasks.value = data.tasks || []
+    if (!adminTasks.value.some((task) => task.id === selectedAdminTaskId.value)) {
+      selectedAdminTaskId.value = adminTasks.value[0]?.id || ''
+      adminTaskDetail.value = null
+      adminTaskEvents.value = []
+    }
+    if (selectedAdminTaskId.value) await loadAdminTaskDetail(selectedAdminTaskId.value)
+    if (showToast) showStatus(`已同步 ${adminTasks.value.length} 条演示任务`)
+  } catch (error) {
+    console.warn('校方任务加载失败', error)
+    if (showToast) showStatus('任务中心加载失败，请确认 pg-server 已启动', 5000)
+  } finally {
+    adminLoading.value = false
+  }
+}
+
+async function selectAdminTask(id) {
+  if (!id) return
+  selectedAdminTaskId.value = id
+  try {
+    await loadAdminTaskDetail(id)
+  } catch (error) {
+    showStatus(`读取任务详情失败：${error.message}`, 5000)
+  }
+}
+
+async function showSelectedAdminTaskRoute() {
+  const task = selectedAdminTask.value
+  const sourceRoute = task?.route_result?.route
+  if (!task || !sourceRoute?.points?.length) {
+    showStatus('该任务尚未生成可展示的校园推荐通道', 4000)
+    return
+  }
+  const route = {
+    ...sourceRoute,
+    id: `demo-task-${task.id}`,
+    name: `${task.request_no} · 校园推荐通道`,
+    description: `${task.origin_text} → ${task.destination_text}｜${task.route_result.algorithm || 'A*'} 规划`,
+    planned: true,
+  }
+  const existingIndex = routes.value.findIndex((item) => item.id === route.id)
+  if (existingIndex >= 0) routes.value.splice(existingIndex, 1, route)
+  else routes.value.unshift(route)
+  selectedRouteId.value = route.id
+  planResult.value = { ...task.route_result, route }
+  layers.route = true
+  const animationMode = task.status === 'IN_FLIGHT'
+    ? 'play'
+    : ['ARRIVED', 'PICKED_UP', 'COMPLETED'].includes(task.status)
+      ? 'arrived'
+      : 'idle'
+  await loadSelectedRoute(route, { isPlanned: true, skipCameraFly: true, animationMode })
+  showStatus('已在三维地图中加载该任务的校园推荐通道')
+}
+
+async function runAdminTaskAction(action) {
+  const task = selectedAdminTask.value
+  if (!task || adminActionLoading.value) return
+  const endpoints = {
+    approve: 'approve',
+    reject: 'reject',
+    dispatch: 'dispatch',
+    advance: 'advance',
+    exception: 'exception',
+  }
+  const endpoint = endpoints[action]
+  if (!endpoint) return
+
+  adminActionLoading.value = action
+  try {
+    const body = action === 'approve'
+      ? { comment: '校方演示审批：校园空间适配通过，允许进入企业运力匹配。' }
+      : action === 'reject'
+        ? { comment: '校方演示驳回：请补充校园运输条件后重新提交。' }
+        : action === 'exception'
+          ? { reason: '沙箱模拟：天气窗口变化，航班暂缓执行。' }
+          : {}
+    const data = await fetchDemoApi(`${API_BASE}/admin/demo/tasks/${task.id}/${endpoint}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+    adminTaskDetail.value = data.task
+    if (action === 'approve' && data.task?.route_result) await showSelectedAdminTaskRoute()
+    if (action === 'advance' && data.task?.route_result) await showSelectedAdminTaskRoute()
+    await loadAdminTasks()
+    const labels = { approve: '已批准并生成推荐通道', reject: '任务已驳回', dispatch: '企业沙箱已接单', advance: '任务已推进至下一阶段', exception: '已写入沙箱异常分支' }
+    showStatus(labels[action])
+  } catch (error) {
+    showStatus(`操作失败：${error.message}`, 5000)
+  } finally {
+    adminActionLoading.value = ''
+  }
+}
+
 function showStatus(msg, ms = 3000) {
   statusMessage.value = msg
   if (ms > 0) setTimeout(() => { statusMessage.value = '' }, ms)
+}
+
+function returnToRolePortal() {
+  window.location.assign('/')
 }
 
 async function fetchJson(url, options = {}) {
@@ -1498,17 +1888,40 @@ async function fetchJson(url, options = {}) {
 
 async function assetExists(url) {
   try {
-    const res = await fetch(url, { method: 'HEAD', cache: 'no-store' })
+    const res = await fetch(url, { method: 'HEAD' })
     if (!res.ok) return false
-
-    // Vite's SPA fallback can return index.html with a 200 status for a missing
-    // asset. Treating that response as a model or tileset causes noisy Cesium
-    // loader errors and hides the configured fallback model.
-    const contentType = (res.headers.get('content-type') || '').toLowerCase()
-    return !contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')
+    const contentType = res.headers.get('content-type') || ''
+    return !contentType.includes('text/html')
   } catch {
     return false
   }
+}
+
+async function jsonAssetExists(url) {
+  try {
+    const res = await fetch(url, { cache: 'no-store' })
+    if (!res.ok) return false
+    const contentType = res.headers.get('content-type') || ''
+    if (contentType.includes('text/html')) return false
+    await res.clone().json()
+    return true
+  } catch {
+    return false
+  }
+}
+
+function createCesiumTerrainProvider(url) {
+  if (typeof Cesium.CesiumTerrainProvider.fromUrl === 'function') {
+    return Cesium.CesiumTerrainProvider.fromUrl(url)
+  }
+  return new Cesium.CesiumTerrainProvider({ url })
+}
+
+function createCesium3DTileset(url, options = {}) {
+  if (typeof Cesium.Cesium3DTileset.fromUrl === 'function') {
+    return Cesium.Cesium3DTileset.fromUrl(url, options)
+  }
+  return new Cesium.Cesium3DTileset({ url, ...options })
 }
 
 function removeGridPrimitives(primitives) {
@@ -1757,6 +2170,7 @@ async function reloadGridsInView() {
   if (!bbox) bbox = getCampusBbox(0.002)
 
   bbox = clampBboxToCampus(bbox)
+
   if (!bbox) {
     gridAbortController?.abort()
     clearAllGrids()
@@ -1965,16 +2379,13 @@ function onRouteSelect() {
 async function setupTerrain() {
   if (!appConfig.terrain?.enabled) return
   const url = appConfig.terrain.url || './terrain'
-  if (!(await assetExists(`${url}/layer.json`))) {
+  if (!(await jsonAssetExists(`${url}/layer.json`))) {
     showStatus('本地地形数据不可用')
     layers.terrain = false
     return
   }
   try {
-    terrainProvider = typeof Cesium.CesiumTerrainProvider.fromUrl === 'function'
-      ? await Cesium.CesiumTerrainProvider.fromUrl(url)
-      : new Cesium.CesiumTerrainProvider({ url })
-    if (terrainProvider.readyPromise) await terrainProvider.readyPromise
+    terrainProvider = await createCesiumTerrainProvider(url)
     viewer.terrainProvider = terrainProvider
     viewer.scene.globe.depthTestAgainstTerrain = true
   } catch (e) {
@@ -1988,7 +2399,7 @@ async function setupTileset() {
   if (!cfg?.enabled) return
 
   const url = cfg.url || './3dtiles/tileset.json'
-  if (!(await assetExists(url))) {
+  if (!(await jsonAssetExists(url))) {
     showStatus('3D Tiles 未找到，将加载 campus-model2.glb 校园模型')
     layers.tileset = false
     layers.fallbackModel = appConfig.fallbackModel?.enabled !== false
@@ -1996,8 +2407,7 @@ async function setupTileset() {
   }
 
   try {
-    const tilesetOptions = {
-      url,
+    tileset3d = await createCesium3DTileset(url, {
       maximumScreenSpaceError: cfg.maximumScreenSpaceError || 16,
     }
     tileset3d = typeof Cesium.Cesium3DTileset.fromUrl === 'function'
@@ -2252,10 +2662,20 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
     })
   }
 
-  startFlightAnimation(route, pathData, headingOffset)
+  const animationMode = options.animationMode || 'play'
+  if (animationMode === 'play') {
+    startFlightAnimation(route, pathData, headingOffset)
+  } else {
+    setDroneStaticPosition(route, headingOffset, animationMode === 'arrived')
+  }
   const lenKm = (pathData.totalLength / 1000).toFixed(2)
   const tag = isPlanned ? '智能规划' : '已加载'
-  showStatus(`${tag}航线：${route.name}（约 ${lenKm} km），动画播放中`)
+  const animationText = animationMode === 'play'
+    ? '动画播放中'
+    : animationMode === 'arrived'
+      ? '已到达终点接驳点'
+      : '等待企业沙箱起飞'
+  showStatus(`${tag}航线：${route.name}（约 ${lenKm} km），${animationText}`)
 
   if (!options.skipEvaluation) {
     if (route.planned && routeEvaluation.value) {
@@ -2276,6 +2696,18 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
       ),
     })
   }
+}
+
+function setDroneStaticPosition(route, headingOffset = 0, atEnd = false) {
+  if (!droneEntity || !route?.points?.length || !viewer) return
+  const point = atEnd ? route.points[route.points.length - 1] : route.points[0]
+  const position = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, point.height)
+  droneEntity.position = position
+  droneEntity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
+    position,
+    new Cesium.HeadingPitchRoll(headingOffset, 0, 0),
+  )
+  viewer.clock.shouldAnimate = false
 }
 
 async function evaluateCurrentRoute(routeOverride = null) {
@@ -2653,23 +3085,15 @@ function handleGlobalKeyDown(event) {
 }
 
 onMounted(async () => {
-  globalThis.addEventListener('skynest-auth-expired', handleAuthExpired)
-  const session = await demoApi.restoreSession()
-  if (session) {
-    currentUser.value = session.user
-    activeRole.value = session.user.role
-  }
-  authReady.value = true
-
-  Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIzNTQ0NDQ2MS01ZWY1LTQ1MTYtYTQxMy0xMGU3MDQ3MTdiOGIiLCJpZCI6MzgwMjU5LCJpYXQiOjE3Njg3MTE4NjN9.2iChjh8X6t7I-ENresR0UqwghQH3KgQYYnB_212G8OY'
-
   await loadAppConfig()
+  Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_TOKEN || ''
   // 优先加载下拉框数据，避免被 Cesium 初始化阻塞
   await Promise.all([
     loadHotspotsIndex(),
     loadRoutesFromApi(),
     loadCampusPlaces(),
     checkDatabase(),
+    loadAdminTasks(),
   ])
 
   viewer = new Cesium.Viewer('cesiumContainer', {
@@ -2710,7 +3134,19 @@ onMounted(async () => {
   if (layers.grid) await reloadGridsInView()
   await checkDatabase()
   startDbWatch()
-  document.addEventListener('keydown', handleGlobalKeyDown)
+  adminTaskTimer = setInterval(() => { loadAdminTasks() }, 5000)
+
+  const onKeyDown = (e) => {
+    if (e.key === 'o') flyToCampus()
+    if (e.key === 'h') { layers.heatmap = !layers.heatmap; toggleHeatmap() }
+    if (e.key === 'g') { layers.grid = !layers.grid; toggleGrid() }
+    if (e.key === 'Escape' && (pickModeActive.value || pickModeLoading.value)) exitPickMode()
+  }
+  document.addEventListener('keydown', onKeyDown)
+
+  onUnmounted(() => {
+    document.removeEventListener('keydown', onKeyDown)
+  })
 })
 
 onUnmounted(() => {
@@ -2718,6 +3154,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeyDown)
   clearTimeout(gridLoadTimer)
   clearInterval(dbCheckTimer)
+  clearInterval(adminTaskTimer)
   destroyPickHandler()
   clearPickMarker()
   clearPlanPreviewLine()
@@ -2768,6 +3205,18 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.portal-home-button {
+  pointer-events: auto;
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, .35);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .1);
+  color: #e4f3ff;
+  cursor: pointer;
+  font-size: 11px;
 }
 
 .header-status {
@@ -2864,6 +3313,52 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.admin-task-section {
+  border-left: 2px solid rgba(66, 165, 245, 0.82);
+  padding-left: 8px;
+}
+
+.admin-title-row, .admin-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-title-row h3 { margin-bottom: 0; }
+.admin-refresh-btn { flex: 0; padding: 4px 8px; font-size: 11px; }
+.admin-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 8px 0; }
+.admin-metrics div { padding: 6px 4px; border-radius: 4px; background: rgba(144,202,249,.1); text-align: center; }
+.admin-metrics span { display: block; color: #9db1c6; font-size: 10px; }
+.admin-metrics strong { color: #e3f2fd; font-size: 16px; }
+.admin-task-list { max-height: 160px; margin-top: 8px; overflow-y: auto; }
+.admin-task-item { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 6px; margin: 4px 0; padding: 7px; background: rgba(255,255,255,.06); text-align: left; }
+.admin-task-item:hover, .admin-task-item.selected { background: rgba(66,165,245,.3); }
+.admin-task-item strong, .admin-task-item small { display: block; overflow: hidden; max-width: 165px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-task-item strong { color: #e7f3ff; font-size: 11px; }
+.admin-task-item small { margin-top: 2px; color: #9eb3c5; font-size: 9px; }
+.admin-task-item em { padding: 3px 5px; border-radius: 3px; font-size: 9px; font-style: normal; white-space: nowrap; }
+.status-pending { background: #6b4f16; color: #ffe19c; }
+.status-approved { background: #135a5e; color: #b9fffb; }
+.status-flying { background: #16508b; color: #c8e7ff; }
+.status-exception { background: #772e35; color: #ffd0d4; }
+.status-completed { background: #275d40; color: #c4f6d4; }
+.status-default { background: #485565; color: #dbe8f5; }
+.admin-task-detail { margin-top: 8px; padding: 8px; border: 1px solid rgba(144,202,249,.28); border-radius: 5px; background: rgba(0,0,0,.15); font-size: 11px; line-height: 1.45; }
+.admin-task-detail p { margin: 5px 0; color: #d3deea; }
+.admin-detail-head span { color: #ffcc80; font-size: 10px; }
+.admin-action-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.admin-action-row button { flex: auto; padding: 5px 6px; font-size: 10px; }
+.approve-btn, .dispatch-btn { background: #00897b; }
+.approve-btn:hover:not(:disabled), .dispatch-btn:hover:not(:disabled) { background: #00695c; }
+.reject-btn, .exception-btn { background: #a73d4a; }
+.reject-btn:hover:not(:disabled), .exception-btn:hover:not(:disabled) { background: #832e38; }
+.advance-btn { background: #1565c0; }
+.show-route-btn { background: #6a1b9a; }
+.sandbox-text { color: #ffcc80 !important; }
+.telemetry-box { display: flex; justify-content: space-between; margin-top: 7px; padding: 5px 6px; border-radius: 3px; background: rgba(0,137,123,.2); color: #b2dfdb; font-size: 10px; }
+.admin-events { margin-top: 7px; color: #a8c3d7; font-size: 10px; line-height: 1.55; }
+
 .layer-item {
   display: flex;
   align-items: center;
@@ -2899,6 +3394,36 @@ select {
   color: #fff;
   font-size: 12px;
 }
+
+.form-input {
+  box-sizing: border-box;
+  padding: 6px;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #1a2035;
+  color: #fff;
+  font-size: 12px;
+}
+
+.agent-section {
+  border-left: 2px solid rgba(0, 137, 123, 0.8);
+  padding-left: 8px;
+}
+
+.agent-check-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 10px 2px 0;
+  font-size: 11px;
+  color: #c7d7e8;
+}
+
+.agent-submit-btn { background: #7b1fa2; }
+.agent-submit-btn:hover:not(:disabled) { background: #6a1b9a; }
+.agent-route-btn { background: #00897b; }
+.agent-route-btn:hover:not(:disabled) { background: #00695c; }
+.agent-questions { margin-top: 6px; color: #ffcc80; }
 
 .route-desc, .hint {
   font-size: 11px;

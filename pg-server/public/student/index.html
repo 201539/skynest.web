@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b3558" />
+    <title>SkyNest 校园低空配送</title>
+    <link rel="stylesheet" href="./student.css" />
+  </head>
+  <body>
+    <main class="phone-shell">
+      <header class="hero">
+        <div class="brand-row"><span class="brand-mark">S</span><span>SkyNest</span><a id="role-home" class="home-link" href="/">角色首页</a><span class="sandbox-badge">原型系统</span></div>
+        <h1>校园低空配送服务</h1>
+        <p>科研急件优先 · 固定接驳点取件</p>
+      </header>
+      <section class="notice"><strong>服务说明</strong><span>平台连接校方与合规无人机企业；飞行和企业状态均为沙箱仿真。</span></section>
+      <section id="task-panel" class="panel" aria-live="polite"></section>
+      <section id="form-panel" class="panel form-panel">
+        <div class="section-heading"><div><span class="eyebrow">发起运输需求</span><h2>科研急件申请</h2></div><button id="show-demo-values" class="text-button" type="button">填入演示值</button></div>
+        <form id="task-form">
+          <label>起点<select id="origin" required></select></label>
+          <label>终点<select id="destination" required></select></label>
+          <div class="grid-two">
+            <label>物品类型<select id="item-category" required><option value="experimental_material">实验材料</option><option value="document">文件资料</option><option value="book">图书</option><option value="meal">生活物资</option></select></label>
+            <label>重量（kg）<input id="weight" type="number" min="0.1" step="0.1" value="2.5" required /></label>
+          </div>
+          <label>期望送达时间<input id="deadline" type="datetime-local" required /></label>
+          <div class="grid-two">
+            <label>优先级<select id="priority"><option value="high">高：科研急件</option><option value="normal">普通</option></select></label>
+            <label>特殊要求<select id="requirement"><option value="shockproof">防震</option><option value="fragile">易碎</option><option value="waterproof">防水</option><option value="">无</option></select></label>
+          </div>
+          <details><summary>联系人（原型预设，不填写真实信息）</summary><div class="grid-two details-fields"><label>姓名<input id="contact-name" value="演示用户" maxlength="30" /></label><label>手机号<input id="contact-phone" value="13800000000" inputmode="numeric" maxlength="20" /></label></div></details>
+          <label class="agreement"><input id="agreement" type="checkbox" required /> 我已阅读禁运物品与固定接驳点规则</label>
+          <button id="create-task" class="primary-button" type="submit">AI 分析运输需求</button>
+        </form>
+      </section>
+    </main>
+    <template id="empty-task-template"><div class="empty-state"><span class="empty-icon">⌁</span><p>填写一份科研急件申请，开始任务分析。</p></div></template>
+    <script src="./student.js"></script>
+  </body>
+</html>

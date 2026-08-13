@@ -24,6 +24,14 @@ export default defineConfig({
         target: 'http://localhost:3001',
         changeOrigin: true,
       },
+      '/student': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/enterprise': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
     },
   },
   optimizeDeps: {
