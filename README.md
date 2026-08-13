@@ -1,374 +1,265 @@
-# 仙林校区无人机适航评估平台 — 运行与配置说明
+# SkyNest 仙林校区无人机低空配送平台
 
-基于 **Vue 3 + Cesium 1.95 + Express + PostgreSQL 18** 的 Web 三维适航评估平台，支持适航格网视口加载、热力图时序、飞行航线与适航评分。
+SkyNest 是一个基于 **Vue 3、Cesium、Express、PostgreSQL/PostGIS** 的校园低空配送演示平台。系统已经接通师生、校方和运营商三类角色，并将任务 Agent、动态 Cost、A* 航线规划、动态重规划、安全管控和审计记录统一到 V3 数据库流程中。
 
----
+当前版本适合本地比赛演示。核心业务闭环已经完成；正式上线前仍需补充身份鉴权、自动化页面测试和生产部署。
+
+## 已实现能力
+
+| 模块 | 当前能力 |
+| --- | --- |
+| 三维校园 | Cesium 场景、本地地形、校园 GLB、无人机 GLB、格网与热力图展示 |
+| 师生端 | 自然语言解析、表单回填、人工确认、任务提交和进度查询 |
+| 任务 Agent | 地点匹配、物品识别、V3 机型与高风险规则校验、服务端防篡改复核 |
+| 校方端 | 任务审核、动态航线生成、临时限制区、冲突检测、重规划、安全熔断和审计查询 |
+| 运营端 | 分配无人机和接驳节点、派发、运输、到达、交付及资源释放 |
+| 动态 Cost | 静态适航、人流、天气、施工/活动、禁飞区和能源风险综合计算 |
+| 路径算法 | 基于动态 Cost 的 A*、航线持久化、新旧版本关联和安全失败处理 |
+| 解释能力 | 航线确定性解释；可选 Ollama/百炼任务说明，模型不可用时安全降级 |
 
 ## 目录结构
 
+```text
+skynest.web/
+├── demo/                         # Vue + Cesium 前端
+│   ├── src/App.vue               # 三维地图与角色入口
+│   ├── src/components/           # 师生、校方、运营商及共享卡片
+│   ├── src/domain/               # 前端数据契约与演示规则
+│   ├── src/services/demoApi.js   # V3 接口与演示降级适配
+│   └── public/                   # 地形、GLB、热力图、地点及可选 3D Tiles
+├── pg-server/                    # Express 后端
+│   ├── agent/                    # 确定性任务 Agent
+│   ├── llm/                      # Ollama/百炼解释层与安全降级
+│   ├── lib/                      # 动态 Cost、路径、流程、安全与审计服务
+│   ├── migrations/               # V3 增量迁移
+│   ├── routes/v3.js              # V3 API
+│   └── verify-*.js               # 真实数据库事务自测
+├── docs/                         # 数据契约、合并说明和联调报告
+├── PROGRESS.md                   # 当前进度与剩余任务
+└── start.ps1                     # Windows 一键启动
 ```
-F:\无人机大创\
-├── README.md                      # 本说明文档
-├── start.ps1                      # 一键启动 API + 前端
-├── nanjing_uni_3d_grid_new.sql    # 格网数据备份（pg_dump TAR，约 1.3GB）
-│
-├── demo/                          # 前端（Vite + Vue + Cesium）
-│   ├── src/App.vue                # 主界面与地图逻辑
-│   ├── public/
-│   │   ├── config/app.json        # 前端配置（校区中心、图层、格网参数）
-│   │   ├── data/campus-buildings.geojson   # 简易校园建筑（12 栋）
-│   │   ├── hotspotsdata/          # 热力图 CSV（168 帧）+ index.json
-│   │   ├── terrain/               # 本地 Cesium 地形
-│   │   ├── 3dtiles/               # 3D Tiles 实景（待放入 tileset.json）
-│   │   └── Models/                # GLB 模型（待放入）
-│   └── vite.config.js             # /api 代理 → localhost:3001
-│
-└── pg-server/                     # 后端 API
-    ├── index.js                   # Express 服务
-    ├── data/routes.json           # 3 条示范航线
-    ├── schema.sql                 # 建表与索引
-    ├── import-table.sql           # 无 PostGIS 兼容建表脚本
-    ├── import-data.ps1            # 一键导入格网数据
-    ├── setup-db.js                # 执行 schema.sql / 检查索引
-    ├── install-postgresql-service.ps1  # PostgreSQL 18 安装与注册服务
-    └── .env.example               # 环境变量模板
-```
-
----
 
 ## 环境要求
 
-| 组件 | 版本 / 说明 |
-|------|-------------|
-| 操作系统 | Windows 10/11 |
-| Node.js | 18+（需已安装 npm） |
-| PostgreSQL | 18.x，服务名 `postgresql-x64-18`，端口 `5432` |
-| 浏览器 | Chrome / Edge（推荐），须通过 `http://localhost:5173` 访问 |
+- Windows 10/11
+- Node.js 18 或更高版本
+- PostgreSQL 18
+- V3 数据库需安装 PostGIS；当前验证版本为 PostGIS 3.6.2
+- Chrome 或 Edge
 
----
+## 首次运行
 
-## 首次安装与配置
-
-### 1. 安装 Node 依赖
+### 1. 安装依赖
 
 ```powershell
-cd F:\无人机大创\pg-server
+cd pg-server
 npm install
 
-cd F:\无人机大创\demo
+cd ..\demo
 npm install
 ```
 
-### 2. 安装并配置 PostgreSQL 18
+### 2. 配置数据库
 
-**方式 A：已安装 PostgreSQL 18**
-
-确保服务运行：
+复制模板并填写本机数据库密码：
 
 ```powershell
-Start-Service postgresql-x64-18
+cd ..\pg-server
+Copy-Item .env.example .env
 ```
 
-**方式 B：全新安装（需管理员 PowerShell）**
-
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-& "F:\无人机大创\pg-server\install-postgresql-service.ps1"
-```
-
-脚本默认配置：
-
-| 项 | 值 |
-|----|-----|
-| 安装路径 | `C:\Program Files\PostgreSQL\18` |
-| 数据目录 | `C:\PostgreSQL\18\data` |
-| 服务名 | `postgresql-x64-18` |
-| 超级用户 | `postgres` |
-| 密码 | 运行脚本时隐藏输入，或预先设置 `PG_PASSWORD` |
-| 数据库 | `nanjing_uni_grid_score` |
-
-> 说明：Program Files 下因权限问题无法 initdb，数据目录单独放在 `C:\PostgreSQL\18\data`。
-
-### 3. 配置后端环境变量（必需）
-
-复制模板并按需修改：
-
-```powershell
-cd F:\无人机大创\pg-server
-copy .env.example .env
-```
-
-`.env` 字段说明：
+最少需要配置：
 
 ```env
-PG_HOST=localhost          # 数据库主机
-PG_PORT=5432               # 数据库端口
-PG_USER=postgres           # 数据库用户
-PG_PASSWORD=请填写本机数据库密码  # 数据库密码；不要提交到 Git
-PG_DATABASE=nanjing_uni_grid_score   # 数据库名
-PG_V3_DATABASE=nanjing_uni_grid_v3_test  # V3 业务数据库
-PORT=3001                  # API 监听端口
+PG_HOST=localhost
+PG_PORT=5432
+PG_USER=postgres
+PG_PASSWORD=请填写本机数据库密码
+PG_DATABASE=nanjing_uni_grid_score
+PG_V3_DATABASE=nanjing_uni_grid_v3_test
+PORT=3001
 ```
 
-项目不再内置数据库密码。请为需要密码认证的数据库创建本地 `.env`；该文件已被 `.gitignore` 排除，不会提交到 Git。也可以通过系统环境变量提供配置。
+- `.env` 已被 Git 忽略，不要将真实密码发给其他成员或提交到仓库。
+- 如果 V3 数据库使用不同账号，可在 `.env` 中单独设置 `PG_V3_HOST`、`PG_V3_PORT`、`PG_V3_USER` 和 `PG_V3_PASSWORD`。
+- 项目代码不再内置默认数据库密码。
 
-### 4. 导入格网数据（约 240 万条）
+### 3. 准备数据库
 
-确保 `F:\无人机大创\nanjing_uni_3d_grid_new.sql` 存在，然后执行：
+项目同时保留两套数据入口：
+
+- `PG_DATABASE`：早期三维格网与 `/api/*` 兼容接口使用。
+- `PG_V3_DATABASE`：当前任务、规则、动态 Cost、航线和安全流程使用。
+
+如果需要导入早期格网备份，可执行：
 
 ```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-& "F:\无人机大创\pg-server\import-data.ps1"
+cd pg-server
+.\import-data.ps1
+npm run setup-db
 ```
 
-流程：建兼容表结构 → `pg_restore --data-only` 导入 → 校验行数。  
-预期结果：**2,401,380 条**记录。导入日志：`pg-server/import.log`。
-
-> 原 dump 含 PostGIS 类型（`box3d`、`geometry`），本机未装 PostGIS，已通过 `import-table.sql` 将 `geom` 改为 `text` 后导入。坐标字段 `x_min/y_min` 等已是 **WGS84 经纬度**，无需 CGCS2000 转换。
-
-### 5. 初始化数据库索引（推荐）
-
-数据导入完成后执行，加速 bbox 视口查询：
+V3 基础数据库应先包含 `static`、`periodic`、`runtime` 三个 schema。随后执行项目增量迁移：
 
 ```powershell
-cd F:\无人机大创\pg-server
-node setup-db.js
+npm run migrate-v3
+npm run verify-v3
 ```
 
-### 6. 配置前端（可选）
+迁移脚本可重复执行，不会删除已有业务数据。当前 V3 自测可读取约 240 万格网、13 个固定节点和 8 架无人机。
 
-编辑 `demo/public/config/app.json`：
+### 4. 启动项目
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `campusCenter` | 飞到校区的相机中心 | lng 118.956833, lat 32.111583 |
-| `tileset3d` | 3D Tiles 实景路径 | `./3dtiles/tileset.json` |
-| `campusBuildings` | 简易建筑 GeoJSON | `./data/campus-buildings.geojson` |
-| `terrain` | 本地地形 | `./terrain`，enabled: true |
-| `grid.bboxLimit` | 单次视口最大格网数 | 8000 |
-| `grid.zMin / zMax` | 高度过滤（米） | 0 ~ 200 |
-| `grid.useDemoWhenOffline` | DB 不可用时演示格网 | true |
-| `apiBase` | API 前缀 | `/api`（由 Vite 代理） |
-
----
-
-## 日常启动流程
-
-### 推荐：一键启动
+在项目根目录执行：
 
 ```powershell
-# 1. 确保 PostgreSQL 已运行
-Start-Service postgresql-x64-18
-
-# 2. 一键启动 API + 前端（会打开两个 PowerShell 窗口）
-F:\无人机大创\start.ps1
+.\start.ps1
 ```
 
-### 手动启动（便于查看日志）
-
-**终端 1 — 后端 API**
+也可以分别启动：
 
 ```powershell
-cd F:\无人机大创\pg-server
-node index.js
-# 输出：API 服务已启动: http://localhost:3001
-```
+# 终端 1
+cd pg-server
+npm start
 
-**终端 2 — 前端**
-
-```powershell
-cd F:\无人机大创\demo
+# 终端 2
+cd demo
 npm run dev
-# 输出：Local: http://localhost:5173/
 ```
 
-**浏览器访问**
+打开：
 
-```
-http://localhost:5173
-```
+- 页面：<http://localhost:5173/>
+- 后端：<http://localhost:3001/api/v3/health>
 
-> ⚠️ 必须通过 Vite 开发服务器访问，**不要**用 `file://` 直接打开 HTML，否则 API 代理与静态资源会失效。
+请勿使用 `file://` 直接打开 HTML，否则前端代理和静态资源会失效。
 
-### 启动后自检
+## 三类角色操作流程
 
-| 检查项 | 地址 | 预期结果 |
-|--------|------|----------|
-| 数据库连接 | http://localhost:5173/api/health | `{"ok":true,"database":"connected"}` |
-| 格网统计 | http://localhost:5173/api/stats | `total: 2401380` |
-| 航线列表 | http://localhost:5173/api/routes | 3 条航线 |
-| 热力图索引 | http://localhost:5173/hotspotsdata/index.json | 168 个 CSV 文件名 |
+### 师生端
 
-页面顶栏应显示：**已连接 · 2,401,380 条格网**。  
-若显示「数据库未连接」，先确认 `pg-server` 已启动，再点击顶栏 **重试** 或 **Ctrl+Shift+R** 强制刷新。
+1. 输入自然语言需求，或直接填写表单。
+2. 检查 Agent 回填结果、风险提示和模型说明来源。
+3. 人工确认后提交任务。
+4. 在“我的任务”查看审核、派发、运输、到达和交付状态。
 
----
+### 校方端
 
-## 平台功能使用流程
+1. 审核待处理任务；批准时调用动态 Cost A* 生成航线。
+2. 在安全管控中创建临时限制区并检查航线冲突。
+3. 对冲突航线执行重规划，或对执行中任务进行安全熔断。
+4. 在审计记录中查询任务、审批、运营和安全事件。
 
-```
-打开 localhost:5173
-    ↓
-确认顶栏「已连接」
-    ↓
-点击「飞到校区」或按 O 键
-    ↓
-┌─────────────────────────────────────────────┐
-│ 图层控制：勾选/取消 地形、建筑、热力图、     │
-│           适航格网、飞行路径、无人机         │
-├─────────────────────────────────────────────┤
-│ 热力图时序：下拉选 CSV → 上一帧/下一帧       │
-├─────────────────────────────────────────────┤
-│ 飞行航线：选航线 → 重播 / 评估               │
-├─────────────────────────────────────────────┤
-│ 适航格网：勾选后拖动地图，自动加载视口格网   │
-└─────────────────────────────────────────────┘
-```
+### 运营端
 
-### 快捷键
+1. 接收校方批准的任务和航点链。
+2. 分配可用无人机与接驳节点。
+3. 依次推进派发、运输、到达和交付状态。
+4. 完成交付后系统自动释放无人机和节点。
 
-| 按键 | 功能 |
-|------|------|
-| `O` | 飞到仙林校区 |
-| `H` | 切换热力图图层 |
-| `G` | 切换适航格网图层 |
+## Agent 与解释模型
 
-### 适航评分图例
+风险等级、机型、特殊运输要求和航线坐标由数据库与确定性算法决定。语言模型只生成面向不同角色的文字说明，不能修改安全关键字段或代替校方审批。
 
-| 分数区间 | 等级 |
-|----------|------|
-| 0 ~ 0.2 | 严重不适航 |
-| 0.2 ~ 0.4 | 不适航 |
-| 0.4 ~ 0.6 | 基本达标 |
-| 0.6 ~ 0.8 | 良好适航 |
-| 0.8 ~ 1.0 | 最优适航 |
+默认关闭模型，系统使用 V3 规则说明：
 
----
-
-## 数据流架构
-
-```
-浏览器 (Vue + Cesium :5173)
-    │
-    ├── /hotspotsdata/*.csv          → 本地静态文件（168 帧热力图）
-    ├── /data/campus-buildings.geojson → 校园建筑
-    ├── /terrain/                    → 本地地形
-    │
-    └── /api/*  ──Vite 代理──►  pg-server (:3001)
-                                    │
-                                    └── PostgreSQL
-                                        nanjing_uni_grid_score
-                                        └── nanjing_uni_3d_grid_new
-                                            (~240 万条适航格网)
+```env
+LLM_ENABLED=false
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3.5:4b
+LLM_FALLBACK_ENABLED=true
 ```
 
----
+如使用阿里云百炼：
 
-## API 接口一览
+```env
+LLM_ENABLED=true
+LLM_PROVIDER=dashscope
+DASHSCOPE_API_KEY=仅在服务端填写
+DASHSCOPE_MODEL=qwen-plus
+```
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 数据库连接状态 |
-| GET | `/api/stats` | 格网总数与评分统计 |
-| GET | `/api/routes` | 航线列表 |
-| GET | `/api/routes/:id` | 单条航线详情 |
-| GET | `/api/routes/:id/evaluate` | 航线适航评估（逐航点查格网评分） |
-| GET | `/api/grids/bbox` | 视口范围格网查询（前端主要使用） |
-| GET | `/api/grids/demo` | 数据库不可用时的演示格网 |
-| GET | `/api/grids` | 分页/限量格网查询 |
+模型连接失败、输出格式错误或产生越权结论时，系统会自动回退到确定性说明。
 
-`/api/grids/bbox` 主要参数：`xMin`, `xMax`, `yMin`, `yMax`, `zMin`, `zMax`, `limit`。
+## 主要 V3 API
 
----
+| 分组 | 接口 | 说明 |
+| --- | --- | --- |
+| 数据库 | `GET /api/v3/health`、`GET /api/v3/summary` | V3 状态与表概览 |
+| 静态资源 | `GET /api/v3/nodes`、`/vehicle-rules`、`/high-risk-categories`、`/drones` | 节点、规则和无人机 |
+| Agent | `POST /api/v3/agent/parse`、`GET /api/v3/agent/status`、`PUT /api/v3/agent/config` | 任务解析与解释来源 |
+| 师生任务 | `GET/POST /api/v3/tasks`、`GET /api/v3/student/workspace` | 提交及跟踪 |
+| 校方审核 | `GET /api/v3/reviews`、`POST /api/v3/tasks/:taskId/review` | 审核与生成航线 |
+| 运营执行 | `GET /api/v3/operator/workspace`、`POST .../dispatch`、`POST .../advance` | 派发和状态推进 |
+| 动态算法 | `GET /api/v3/grids/bbox`、`POST /api/v3/dynamic-cost/evaluate` | V3 格网与 Cost |
+| 安全管控 | `/api/v3/safety/*`、`/api/v3/replanning/*` | 限制区、重规划与熔断 |
+| 审计解释 | `GET /api/v3/audit`、`GET /api/v3/tasks/:taskId/route-explanation` | 审计与航线说明 |
+
+旧版 `/api/health`、`/api/stats`、`/api/routes` 和 `/api/grids/*` 仍为三维地图兼容接口。
+
+## 验证与构建
+
+后端提供 11 项自测，涉及写入的测试均在事务中回滚：
+
+```powershell
+cd pg-server
+npm run verify-v3
+npm run verify-dynamic-cost
+npm run verify-dynamic-route
+npm run verify-replanning
+npm run verify-restrictions
+npm run verify-task-workflow
+npm run verify-operator-workflow
+npm run verify-audit-trail
+npm run verify-safety-actions
+npm run verify-route-explanation
+npm run verify-agent
+```
+
+前端生产构建：
+
+```powershell
+cd demo
+npm run build
+```
+
+2026-08-13 最近一次本地验证：上述 11 项后端测试全部通过，前端构建通过。详细记录见 [docs](./docs/)。
+
+## 当前未完成项
+
+- 统一的一键测试命令与前端端到端自动化测试。
+- 登录、身份认证和接口级角色权限。
+- 师生端确认取件/取件码闭环。
+- Ollama 或百炼真实模型环境验证。
+- nginx/进程守护等生产部署配置。
+- 真实倾斜摄影 3D Tiles；当前使用校园 GLB 和简易建筑降级。
+
+具体优先级与外部依赖见 [PROGRESS.md](./PROGRESS.md)。
 
 ## 常见问题
 
-### 顶栏显示「数据库未连接」
+### 页面打不开
 
-1. 确认 PostgreSQL 服务已启动：`Get-Service postgresql-x64-18`
-2. 确认 API 已启动：`node index.js`（端口 3001）
-3. 浏览器访问 http://localhost:5173/api/health 检查
-4. 点击顶栏「重试」或 Ctrl+Shift+R 刷新
+确认 3001 和 5173 端口服务均已启动，并通过 `http://localhost:5173/` 访问。
 
-### 热力图 / 航线下拉框为空
+### V3 数据库未连接
 
-1. 确认通过 `http://localhost:5173` 访问（非 file://）
-2. 确认 `demo/public/hotspotsdata/index.json` 存在（`npm run dev` 会自动生成）
-3. 确认 `pg-server` 已启动（航线从 API 加载；API 不可用时使用内置默认航线）
-4. 强制刷新页面（Ctrl+Shift+R）
+检查 PostgreSQL 服务、本地 `.env`、`PG_V3_DATABASE` 和 PostGIS，然后运行 `npm run verify-v3` 获取明确错误。
 
-### 适航格网不显示
+### 智能解析显示“V3规则说明”
 
-1. 左侧面板勾选「适航格网」
-2. 确认顶栏已连接数据库
-3. 拖动/缩放地图触发视口加载（每次最多 8000 条）
-4. 数据库不可用时，若 `useDemoWhenOffline: true` 会显示演示格网
+这是默认且可用的安全模式，不代表 Agent 失败。只有自然语言润色需要 Ollama 或百炼，字段解析与安全规则不依赖语言模型。
 
-### 3D Tiles 实景 / GLB 模型不显示
+### 3D Tiles 无法显示
 
-- `demo/public/3dtiles/tileset.json` 尚未放入 → 自动回退到 GeoJSON 简易建筑
-- `demo/public/Models/*.glb` 尚未放入 → 无人机模型不可用，不影响格网与热力图
+`demo/public/3dtiles/tileset.json` 尚未提供时，页面会使用 `campus-model2.glb`；格网、热力图和业务流程不受影响。
 
-详见 `demo/public/3dtiles/README.md` 与 `demo/public/Models/README.md`。
+### 前端构建出现 Cesium externalized 提示
 
-### 导入数据失败
-
-- 确认 dump 文件路径：`F:\无人机大创\nanjing_uni_3d_grid_new.sql`
-- 查看日志：`pg-server/import.log`
-- 若表已存在可先清空：`TRUNCATE nanjing_uni_3d_grid_new;` 后重新导入
+这是 Cesium 1.95 与构建工具的兼容提示，当前不会导致构建失败。
 
 ---
 
-## 当前项目进度
-
-### 已完成 ✅
-
-| 模块 | 内容 |
-|------|------|
-| **数据库** | PostgreSQL 18 安装配置；`nanjing_uni_3d_grid_new` 表 **2,401,380 条**数据已导入 |
-| **后端 API** | Express 服务：健康检查、统计、视口 bbox 查询、航线列表、航线适航评估、离线演示格网 |
-| **前端平台 UI** | 图层控制、热力图时序（168 帧）、飞行航线（3 条）、格网透明度、适航图例、评估面板 |
-| **Cesium 三维** | 卫星底图（Cesium Ion）、本地地形、校园建筑 GeoJSON 贴地显示、视口格网渲染 |
-| **性能优化** | 240 万条改为视口按需加载（bbox + limit 8000），避免全量渲染卡死 |
-| **坐标修正** | 确认格网坐标为 WGS84，移除错误的 CGCS2000 转换 |
-| **容错机制** | DB 连接重试 + 15 秒轮询；API 不可用时的默认航线与演示格网；下拉数据优先于 Cesium 初始化加载 |
-| **启动脚本** | `start.ps1` 一键启动；`import-data.ps1` 一键导入；`install-postgresql-service.ps1` 安装数据库 |
-
-### 进行中 / 待完善 🔄
-
-| 模块 | 说明 |
-|------|------|
-| **3D Tiles 实景** | `demo/public/3dtiles/tileset.json` 待放入倾斜摄影数据 |
-| **GLB 模型** | 校园模型 `campus-model2.glb`、无人机模型 `parrot_camo_drone.glb` 待放入 |
-| **PostGIS** | 当前以 text 字段替代 geometry，功能可用；后续可选安装 PostGIS 恢复空间索引 |
-| **生产部署** | 目前为开发模式（Vite dev + Node API），尚未配置 nginx / PM2 等生产方案 |
-
-### 功能完成度概览
-
-```
-核心功能 ████████████████████░░  ~90%
-  ├─ 适航格网加载与展示      ✅
-  ├─ 热力图时序              ✅
-  ├─ 飞行航线与适航评估      ✅
-  ├─ 校园建筑图层            ✅
-  ├─ 本地地形                ✅
-  ├─ 3D Tiles 实景           ⏳ 待数据
-  └─ 无人机 GLB 模型         ⏳ 待数据
-```
-
----
-
-## 相关文件速查
-
-| 需求 | 命令 / 文件 |
-|------|-------------|
-| 一键启动 | `F:\无人机大创\start.ps1` |
-| 导入格网 | `F:\无人机大创\pg-server\import-data.ps1` |
-| 建索引 | `cd pg-server && node setup-db.js` |
-| 修改航线 | 编辑 `pg-server/data/routes.json` |
-| 修改前端配置 | 编辑 `demo/public/config/app.json` |
-| 修改数据库连接 | 编辑 `pg-server/.env` 或环境变量 |
-
----
-
-*最后更新：2026-06-03*
+最后更新：2026-08-13
