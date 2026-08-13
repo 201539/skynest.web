@@ -1,0 +1,161 @@
+const { ITEM_CATEGORIES, REQUIRED_FIELDS, parseNaturalLanguageTask } = require('./taskParser')
+const { matchLocation } = require('./locationMatcher')
+const { recommendVehicle } = require('./vehicleRules')
+
+const FIELD_LABELS = Object.freeze({
+  origin: '起点',
+  destination: '终点',
+  item_category: '物品类型',
+  weight_kg: '重量',
+  deadline: '送达时限',
+})
+
+const FIELD_QUESTIONS = Object.freeze({
+  origin: '请补充任务起点，例如“从图书馆出发”。',
+  destination: '请补充任务终点，例如“送到实验中心”。',
+  item_category: '请说明运输物品类型，例如文件、餐食或实验材料。',
+  weight_kg: '请补充物品重量，单位为公斤。',
+  deadline: '请补充期望送达时间。',
+})
+
+function normalizeStructuredTask(input = {}) {
+  const rawWeight = input.weight_kg === '' || input.weight_kg == null ? null : Number(input.weight_kg)
+  const deadline = input.deadline && !Number.isNaN(new Date(input.deadline).getTime()) ? input.deadline : null
+  const category = ITEM_CATEGORIES.includes(input.item_category) ? input.item_category : input.item_category ? '其他/无法识别' : null
+  const task = {
+    input_text: String(input.input_text || '').trim(),
+    origin: String(input.origin || '').trim(),
+    destination: String(input.destination || '').trim(),
+    item_category: category,
+    weight_kg: Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : null,
+    deadline,
+    priority: ['emergency', 'urgent', 'high', 'normal', 'low'].includes(input.priority) ? input.priority : 'normal',
+    special_requirements: Array.isArray(input.special_requirements)
+      ? [...new Set(input.special_requirements.map((item) => String(item).trim()).filter(Boolean))]
+      : [],
+  }
+  task.missing_fields = REQUIRED_FIELDS.filter((field) => task[field] == null || task[field] === '')
+  return task
+}
+
+function buildClarifyingQuestions(task, originMatch, destinationMatch) {
+  const questions = task.missing_fields.map((field) => FIELD_QUESTIONS[field]).filter(Boolean)
+  for (const [label, value, match] of [
+    ['起点', task.origin, originMatch],
+    ['终点', task.destination, destinationMatch],
+  ]) {
+    if (!value || match.status === 'matched') continue
+    const names = match.candidates.map((item) => item.name).join('、')
+    questions.push(names ? `${label}“${value}”是否指${names}？` : `暂未找到${label}“${value}”，请从校园地点中重新选择。`)
+  }
+  return [...new Set(questions)].slice(0, 4)
+}
+
+function workflowStatus(task, originMatch, destinationMatch, vehicleResult) {
+  if (task.missing_fields.length) return 'needs_clarification'
+  if (originMatch.status !== 'matched' || destinationMatch.status !== 'matched') return 'needs_location_confirmation'
+  if (vehicleResult.needs_manual_review) return 'needs_manual_review'
+  return 'ready_for_school_review'
+}
+
+function formatDeadline(value) {
+  if (!value) return '待确认时间'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date)
+}
+
+function buildExplanation(task, vehicleResult, status) {
+  if (status === 'needs_clarification') return `已识别配送需求，但还缺少${task.missing_fields.length}项必要信息。`
+  if (status === 'needs_location_confirmation') return '任务字段已基本完整，但起点或终点尚未与校园地点可靠对应。'
+  return `我理解这是一项从${task.origin}运送至${task.destination}的${task.item_category}任务，重量约${task.weight_kg}公斤，需在${formatDeadline(task.deadline)}前送达。${vehicleResult.reason}`
+}
+
+function buildAnalysis(task, originMatch, destinationMatch, vehicleResult, status, contextSource) {
+  const recognized = REQUIRED_FIELDS.filter((field) => task[field] != null && task[field] !== '')
+  let confidence = 0.28 + (recognized.length / REQUIRED_FIELDS.length) * 0.55
+  confidence += originMatch.status === 'matched' ? 0.08 : 0
+  confidence += destinationMatch.status === 'matched' ? 0.08 : 0
+  confidence += vehicleResult.vehicle ? 0.05 : 0
+  if (task.item_category === '其他/无法识别') confidence -= 0.12
+  if (task.origin && task.origin === task.destination) confidence -= 0.2
+  const confidenceScore = Math.round(Math.max(0.25, Math.min(0.99, confidence)) * 100)
+  const confidenceLevel = confidenceScore >= 85 ? 'high' : confidenceScore >= 65 ? 'medium' : 'low'
+  const reasoning = []
+  if (task.origin && task.destination) reasoning.push(`识别运输路径：${task.origin} → ${task.destination}`)
+  if (task.item_category) reasoning.push(`物品归类为“${task.item_category}”`)
+  if (task.weight_kg != null) reasoning.push(`识别载重：${task.weight_kg} kg`)
+  if (task.deadline) reasoning.push(`识别送达时限：${formatDeadline(task.deadline)}`)
+  if (vehicleResult.vehicle) reasoning.push(vehicleResult.reason)
+  if (vehicleResult.required_handling?.length) reasoning.push(`数据库要求：${vehicleResult.required_handling.join('、')}`)
+
+  const manualReasons = []
+  if (task.missing_fields.length) manualReasons.push(`仍需补充或核对：${task.missing_fields.map((field) => FIELD_LABELS[field]).join('、')}`)
+  if (originMatch.status !== 'matched' || destinationMatch.status !== 'matched') manualReasons.push('至少一个地点尚未可靠匹配到校园地点库')
+  if (vehicleResult.needs_manual_review) manualReasons.push(vehicleResult.reason)
+  if (confidenceLevel === 'low') manualReasons.push('当前描述信息较少，Agent判断的可靠性偏低')
+
+  return {
+    version: 'v3-task-agent-1.0',
+    source: 'v3-deterministic-agent',
+    data_source: contextSource,
+    confidence_score: confidenceScore,
+    confidence_level: confidenceLevel,
+    explanation: buildExplanation(task, vehicleResult, status),
+    reasoning,
+    recognized_fields: recognized.map((field) => FIELD_LABELS[field]),
+    uncertain_fields: task.missing_fields.map((field) => FIELD_LABELS[field]),
+    manual_review_reasons: manualReasons,
+    confirmation_required: true,
+    confirmation_prompt: manualReasons.length
+      ? '请重点核对下列提示及表单内容，确认无误后再提交任务。'
+      : '解析结果完整度较高，但仍请核对起终点、物品和时限后进行人工确认。',
+    workflow_status: status,
+    can_submit_to_algorithm: status === 'ready_for_school_review',
+    location_matches: { origin: originMatch, destination: destinationMatch },
+    vehicle_recommendation: vehicleResult,
+    clarifying_questions: buildClarifyingQuestions(task, originMatch, destinationMatch),
+    safety_boundary: '风险、机型与运输要求由V3数据库和确定性规则决定；语言模型仅负责解释。',
+    user_confirmed: false,
+    confirmed_at: null,
+  }
+}
+
+function enrichTask(task, context = {}) {
+  const originMatch = matchLocation(task.origin, context.places || [])
+  const destinationMatch = matchLocation(task.destination, context.places || [])
+  const vehicleResult = recommendVehicle(task, context)
+  const status = workflowStatus(task, originMatch, destinationMatch, vehicleResult)
+  const candidateNodeIds = [...originMatch.candidates, ...destinationMatch.candidates]
+    .map((item) => Number(item.node_id))
+    .filter((id) => Number.isInteger(id) && id > 0)
+  const normalizedTask = {
+    ...task,
+    special_requirements: vehicleResult.required_handling,
+    recommended_vehicle_class: vehicleResult.vehicle?.code || null,
+    candidate_node_ids: [...new Set(candidateNodeIds)],
+    needs_manual_review: vehicleResult.needs_manual_review || status !== 'ready_for_school_review',
+    safety_level: vehicleResult.needs_manual_review ? 'high' : 'normal',
+  }
+  return {
+    ...normalizedTask,
+    agent_analysis: buildAnalysis(normalizedTask, originMatch, destinationMatch, vehicleResult, status, context.source || 'deterministic_fallback'),
+  }
+}
+
+function processNaturalLanguage(inputText, context = {}, now = new Date()) {
+  const task = parseNaturalLanguageTask(inputText, {
+    now,
+    placeNames: (context.places || []).map((place) => place.name),
+  })
+  return enrichTask(task, context)
+}
+
+function processStructuredTask(input, context = {}) {
+  return enrichTask(normalizeStructuredTask(input), context)
+}
+
+module.exports = { normalizeStructuredTask, processNaturalLanguage, processStructuredTask }

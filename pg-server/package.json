@@ -3,7 +3,19 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "setup-db": "node setup-db.js"
+    "setup-db": "node setup-db.js",
+    "migrate-v3": "node apply-v3-migrations.js",
+    "verify-v3": "node verify-v3.js",
+    "verify-dynamic-cost": "node verify-dynamic-cost.js",
+    "verify-dynamic-route": "node verify-dynamic-route.js",
+    "verify-replanning": "node verify-replanning.js",
+    "verify-restrictions": "node verify-restrictions.js",
+    "verify-task-workflow": "node verify-task-workflow.js",
+    "verify-operator-workflow": "node verify-operator-workflow.js",
+    "verify-audit-trail": "node verify-audit-trail.js",
+    "verify-safety-actions": "node verify-safety-actions.js",
+    "verify-route-explanation": "node verify-route-explanation.js",
+    "verify-agent": "node verify-agent.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

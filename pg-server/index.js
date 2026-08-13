@@ -6,19 +6,23 @@ const path = require('path')
 const fs = require('fs')
 const { Pool } = require('pg')
 const { computeSearchBbox, planRoute } = require('./lib/routePlanner')
+const { createV3Router } = require('./routes/v3')
+const v3Database = require('./lib/v3Database')
+const routeStore = require('./lib/routeStore')
+const dynamicReplanService = require('./lib/dynamicReplanService')
+const restrictionStore = require('./lib/restrictionStore')
+const taskWorkflowStore = require('./lib/taskWorkflowStore')
+const auditStore = require('./lib/auditStore')
+const { getLegacyDatabaseConfig } = require('./lib/databaseConfig')
 
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '2mb' }))
+app.use('/api/v3', createV3Router())
 
-const pool = new Pool({
-  host: process.env.PG_HOST || 'localhost',
-  port: parseInt(process.env.PG_PORT || '5432', 10),
-  user: process.env.PG_USER || 'postgres',
-  password: process.env.PG_PASSWORD || '974853',
-  database: process.env.PG_DATABASE || 'nanjing_uni_grid_score',
+const pool = new Pool(getLegacyDatabaseConfig({
   max: 10,
-})
+}))
 
 const ROUTES_FILE = path.join(__dirname, 'data', 'routes.json')
 const PLACES_FILE = path.join(__dirname, '..', 'demo', 'public', 'data', 'places.json')
@@ -453,6 +457,16 @@ app.post('/api/route-plan', async (req, res) => {
     minScore,
     gridSize,
     simplifyToleranceMeters,
+    useDynamicCost,
+    requireDynamicCost,
+    costProfile,
+    costWeights,
+    costThresholds,
+    costOverrides,
+    planningAt,
+    timeZone,
+    taskId,
+    persistRoute,
   } = req.body || {}
 
   if (!start?.lng || !start?.lat || !end?.lng || !end?.lat) {
@@ -509,6 +523,20 @@ app.post('/api/route-plan', async (req, res) => {
           simplifyToleranceMeters != null ? parseFloat(simplifyToleranceMeters) : undefined,
         startName,
         endName,
+        dynamicCostSurfaceProvider:
+          useDynamicCost === false ? null : v3Database.getDynamicCostSurface,
+        requireDynamicCost: requireDynamicCost === true,
+        planningAt,
+        timeZone: timeZone || 'Asia/Shanghai',
+        dynamicCostOptions: {
+          profile: costProfile,
+          weights: costWeights,
+          thresholds: {
+            ...(minScore != null ? { minSuitability: parseFloat(minScore) } : {}),
+            ...(costThresholds || {}),
+          },
+          overrides: costOverrides,
+        },
         routeName: startName && endName ? `${startName} → ${endName}` : '智能规划航线',
       },
       generateDemoGrids
@@ -521,15 +549,48 @@ app.post('/api/route-plan', async (req, res) => {
       console.warn('规划航线评估跳过（数据库不可用）:', evalErr.message)
     }
 
+    let persistedRoute = null
+    if (plan.costModel === 'dynamic-v1' && persistRoute !== false) {
+      persistedRoute = await routeStore.persistPlan(plan, {
+        taskId,
+        start: startPt,
+        end: endPt,
+        startName,
+        endName,
+        groundHeight,
+        minScore: minScore != null ? parseFloat(minScore) : undefined,
+        gridSize: gridSize != null ? parseInt(gridSize, 10) : undefined,
+        simplifyToleranceMeters:
+          simplifyToleranceMeters != null ? parseFloat(simplifyToleranceMeters) : undefined,
+        costProfile,
+        costWeights,
+        costThresholds,
+        planningAt: plan.dynamicCost?.sampledAt || planningAt,
+        timeZone: timeZone || 'Asia/Shanghai',
+      })
+      if (persistedRoute) {
+        plan.route.databaseRouteId = persistedRoute.route_id
+        plan.route.taskId = persistedRoute.task_id
+      }
+    }
+
     res.json({
       ...plan,
       evaluation,
+      persistedRoute,
       start: startPt,
       end: endPt,
       plannedAt: new Date().toISOString(),
     })
   } catch (e) {
     console.error(e)
+    if (e.code === 'NO_SAFE_ROUTE') {
+      return res.status(422).json({
+        error: '未找到满足当前动态约束的安全航线',
+        detail: e.message,
+        constraints: e.details,
+      })
+    }
     res.status(500).json({ error: '航线规划失败', detail: e.message })
   }
 })
@@ -780,5 +841,55 @@ app.listen(PORT, () => {
   console.log('  POST /api/routes/evaluate')
   console.log('  GET /api/routes/:id/evaluate')
   console.log('  GET /api/grids/bbox')
+  console.log('  GET /api/v3/health')
+  console.log('  GET /api/v3/summary')
+  console.log('  GET /api/v3/grids/bbox')
+  console.log('  GET /api/v3/nodes')
+  console.log('  GET /api/v3/vehicle-rules')
+  console.log('  GET /api/v3/high-risk-categories')
+  console.log('  GET /api/v3/drones')
+  console.log('  POST /api/v3/agent/parse')
+  console.log('  GET /api/v3/agent/status')
+  console.log('  PUT /api/v3/agent/config')
+  console.log('  GET/POST /api/v3/tasks')
+  console.log('  GET /api/v3/student/workspace')
+  console.log('  GET /api/v3/tasks/:taskId/route-explanation')
+  console.log('  GET /api/v3/reviews')
+  console.log('  POST /api/v3/tasks/:taskId/review')
+  console.log('  GET /api/v3/operator/workspace')
+  console.log('  GET /api/v3/audit')
+  console.log('  POST /api/v3/operator/tasks/:taskId/dispatch')
+  console.log('  POST /api/v3/operator/tasks/:taskId/advance')
+  console.log('  POST /api/v3/dynamic-cost/evaluate')
+  console.log('  GET /api/v3/safety/workspace')
+  console.log('  POST /api/v3/safety/restrictions')
+  console.log('  PATCH /api/v3/safety/restrictions/:restrictionId')
+  console.log('  POST /api/v3/safety/tasks/:taskId/replan')
+  console.log('  POST /api/v3/safety/tasks/:taskId/emergency-stop')
+  console.log('  GET /api/v3/replanning/status')
+  console.log('  POST /api/v3/replanning/run')
+  console.log('  GET /api/v3/tasks/:taskId/routes')
   console.log('  GET /api/grids/demo  (演示模式)')
+  dynamicReplanService.start()
+    .then((serviceStatus) => {
+      console.log(`  Dynamic replan listener: ${serviceStatus.listening ? 'active' : 'disabled'}`)
+    })
+    .catch((error) => {
+      console.warn('Dynamic replan listener failed to start:', error.message)
+    })
 })
+
+async function shutdown() {
+  await dynamicReplanService.stop().catch(() => {})
+  await Promise.allSettled([
+    pool.end(),
+    v3Database.close(),
+    routeStore.close(),
+    restrictionStore.close(),
+    taskWorkflowStore.close(),
+    auditStore.close(),
+  ])
+}
+
+process.once('SIGINT', () => shutdown().finally(() => process.exit(0)))
+process.once('SIGTERM', () => shutdown().finally(() => process.exit(0)))

@@ -84,12 +84,12 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 | 数据目录 | `C:\PostgreSQL\18\data` |
 | 服务名 | `postgresql-x64-18` |
 | 超级用户 | `postgres` |
-| 密码 | `974853` |
+| 密码 | 运行脚本时隐藏输入，或预先设置 `PG_PASSWORD` |
 | 数据库 | `nanjing_uni_grid_score` |
 
 > 说明：Program Files 下因权限问题无法 initdb，数据目录单独放在 `C:\PostgreSQL\18\data`。
 
-### 3. 配置后端环境变量（可选）
+### 3. 配置后端环境变量（必需）
 
 复制模板并按需修改：
 
@@ -104,12 +104,13 @@ copy .env.example .env
 PG_HOST=localhost          # 数据库主机
 PG_PORT=5432               # 数据库端口
 PG_USER=postgres           # 数据库用户
-PG_PASSWORD=974853         # 数据库密码
+PG_PASSWORD=请填写本机数据库密码  # 数据库密码；不要提交到 Git
 PG_DATABASE=nanjing_uni_grid_score   # 数据库名
+PG_V3_DATABASE=nanjing_uni_grid_v3_test  # V3 业务数据库
 PORT=3001                  # API 监听端口
 ```
 
-未创建 `.env` 时，程序使用上述默认值。
+项目不再内置数据库密码。请为需要密码认证的数据库创建本地 `.env`；该文件已被 `.gitignore` 排除，不会提交到 Git。也可以通过系统环境变量提供配置。
 
 ### 4. 导入格网数据（约 240 万条）
 

@@ -8,7 +8,21 @@ $pgRoot   = "C:\Program Files\PostgreSQL\18"
 $pgBin    = Join-Path $pgRoot "bin"
 $dataDir  = "C:\PostgreSQL\18\data"
 $service  = "postgresql-x64-18"
-$password = "974853"
+$configuredPassword = $env:PG_PASSWORD
+if ([string]::IsNullOrWhiteSpace($configuredPassword)) {
+    $securePassword = Read-Host "Enter the password for the PostgreSQL postgres user" -AsSecureString
+    $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+    try {
+        $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+    }
+} else {
+    $password = $configuredPassword
+}
+if ([string]::IsNullOrWhiteSpace($password)) {
+    throw "Database password cannot be empty. Set PG_PASSWORD or enter it when prompted."
+}
 $dbName   = "nanjing_uni_grid_score"
 
 Write-Host "=== PostgreSQL 18 Setup ===" -ForegroundColor Cyan
@@ -26,11 +40,14 @@ New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 $hasCluster = Test-Path (Join-Path $dataDir "PG_VERSION")
 if (-not $hasCluster) {
     Write-Host "[1/4] initdb ..." -ForegroundColor Yellow
-    $pwFile = Join-Path $env:TEMP "pg_init_pw.txt"
-    Set-Content -Path $pwFile -Value $password -NoNewline -Encoding ascii
-    & "$pgBin\initdb.exe" -D $dataDir -U postgres -A scram-sha-256 -E UTF8 --locale=C --pwfile=$pwFile
-    if ($LASTEXITCODE -ne 0) { throw "initdb failed (exit $LASTEXITCODE)" }
-    Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
+    $pwFile = Join-Path ([System.IO.Path]::GetTempPath()) ("skynest-pg-init-{0}.txt" -f [guid]::NewGuid())
+    try {
+        Set-Content -LiteralPath $pwFile -Value $password -NoNewline -Encoding ascii
+        & "$pgBin\initdb.exe" -D $dataDir -U postgres -A scram-sha-256 -E UTF8 --locale=C --pwfile=$pwFile
+        if ($LASTEXITCODE -ne 0) { throw "initdb failed (exit $LASTEXITCODE)" }
+    } finally {
+        Remove-Item -LiteralPath $pwFile -Force -ErrorAction SilentlyContinue
+    }
     Write-Host "      OK" -ForegroundColor Green
 } else {
     Write-Host "[1/4] cluster exists, skip initdb" -ForegroundColor Green
@@ -55,15 +72,20 @@ if ($svc.Status -ne "Running") { throw "Service not running: $($svc.Status)" }
 Write-Host "      OK ($($svc.Status))" -ForegroundColor Green
 
 Write-Host "[4/4] create database ..." -ForegroundColor Yellow
-$env:PGPASSWORD = $password
-& "$pgBin\psql.exe" -U postgres -h localhost -p 5432 -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='$dbName'" | Out-Null
-$exists = & "$pgBin\psql.exe" -U postgres -h localhost -p 5432 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$dbName'"
-if ($exists -ne "1") {
-    & "$pgBin\createdb.exe" -U postgres -h localhost -p 5432 $dbName
-    if ($LASTEXITCODE -ne 0) { throw "createdb failed" }
-    Write-Host "      created $dbName" -ForegroundColor Green
-} else {
-    Write-Host "      $dbName already exists" -ForegroundColor Green
+try {
+    $env:PGPASSWORD = $password
+    $exists = & "$pgBin\psql.exe" -U postgres -h localhost -p 5432 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$dbName'"
+    if ($LASTEXITCODE -ne 0) { throw "database connection failed" }
+    if ($exists -ne "1") {
+        & "$pgBin\createdb.exe" -U postgres -h localhost -p 5432 $dbName
+        if ($LASTEXITCODE -ne 0) { throw "createdb failed" }
+        Write-Host "      created $dbName" -ForegroundColor Green
+    } else {
+        Write-Host "      $dbName already exists" -ForegroundColor Green
+    }
+} finally {
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+    $password = $null
 }
 
 Write-Host ""
@@ -71,7 +93,7 @@ Write-Host "=== DONE ===" -ForegroundColor Green
 Write-Host "Host:     localhost"
 Write-Host "Port:     5432"
 Write-Host "User:     postgres"
-Write-Host "Password: $password"
+Write-Host "Password: configured securely (not displayed)"
 Write-Host "Database: $dbName"
 Write-Host ""
 Write-Host "Next:"
