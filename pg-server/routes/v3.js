@@ -1,6 +1,7 @@
 const express = require('express')
 const v3Database = require('../lib/v3Database')
 const dynamicCost = require('../lib/dynamicCost')
+const dynamicCostCorridor = require('../lib/dynamicCostCorridor')
 const dynamicReplanService = require('../lib/dynamicReplanService')
 const routeStore = require('../lib/routeStore')
 const restrictionStore = require('../lib/restrictionStore')
@@ -432,6 +433,14 @@ function createV3Router() {
         summary: dynamicCost.summarizeCosts(data),
         data,
       })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.post('/dynamic-cost/corridor', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
+    try {
+      res.json(await dynamicCostCorridor.evaluateRouteCorridor(req.body || {}))
     } catch (error) {
       sendQueryError(res, error)
     }

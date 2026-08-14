@@ -736,6 +736,14 @@ export const demoApi = {
     return requestV3Json('/fixed-nodes?limit=100').then((result) => result.data || [])
   },
 
+  getDynamicCostCorridor(values, options = {}) {
+    return requestV3Json('/dynamic-cost/corridor', {
+      method: 'POST',
+      body: JSON.stringify(values),
+      signal: options.signal,
+    })
+  },
+
   getAuditWorkspace() {
     return withWorkflowMode(
       () => requestV3Json('/audit'),

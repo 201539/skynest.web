@@ -227,13 +227,37 @@ function calculateCellCost(cell, context = {}, options = {}) {
   if (noFlyZoneNames.length) riskFactors.push('no_fly_zone')
 
   const passable = hardConstraints.length === 0
+  const suitabilityScore = passable ? clamp01(1 - weightedRisk) : 0
+  const realtimeWeight = model.weights.weather + model.weights.runtime + model.weights.energy
+  const realtimeRisk = realtimeWeight > 0
+    ? (
+        weatherRisk.risk * model.weights.weather
+        + runtimeRisk.risk * model.weights.runtime
+        + energyRisk * model.weights.energy
+      ) / realtimeWeight
+    : 0
   return {
     passable,
+    suitability_score: round(suitabilityScore),
     traversal_cost: passable ? round(1 + model.riskScale * weightedRisk) : null,
     weighted_risk: round(weightedRisk),
     profile: model.profile,
     hard_constraints: hardConstraints,
     risk_factors: [...new Set(riskFactors)],
+    layer_scores: {
+      static: round(1 - staticRisk.risk),
+      periodic: round(1 - populationRisk.risk),
+      realtime: round(1 - clamp01(realtimeRisk)),
+    },
+    layer_data_status: {
+      static: 'available',
+      periodic: populationRisk.source,
+      weather: weatherRisk.hasData ? 'realtime' : 'not_available',
+      runtime: noFlyZoneNames.length || runtimeRisk.constructionNames.length || runtimeRisk.eventNames.length
+        ? 'active'
+        : 'no_active_event',
+      energy: context.drone_battery_percent == null ? 'default_assumption' : 'realtime',
+    },
     active_context: {
       no_fly_zones: noFlyZoneNames,
       construction: runtimeRisk.constructionNames,

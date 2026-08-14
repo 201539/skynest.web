@@ -321,6 +321,8 @@ DASHSCOPE_MODEL=qwen-plus
 
 师生端和校方航线规划均使用 `static.buildings` 中的 83 栋正式建筑。任务地点必须完成正式名称匹配后才能提交；系统通过 `building_node_distance` 自动选择起点建筑最近的 `hub/a~e` 起飞节点，以及终点建筑最近的 `A~G` L3 接驳箱。旧 `places.json` 只用于旧坐标标定维护，不会作为正式任务的航线端点。
 
+校方生成或查看航线后，地图通过 `POST /api/v3/dynamic-cost/corridor` 加载航线两侧默认 90 米范围内的真实格网，并按同一时刻的静态层、周期层和实时层动态 Cost 综合适航分着色。点击格网可查看三层分数、综合 Cost、主要风险和硬约束；镜头移动不会再把航线走廊覆盖为旧的视口静态格网。
+
 旧版 `/api/health`、`/api/stats`、`/api/routes` 和 `/api/grids/*` 仍为三维地图兼容接口。
 
 ## 验证与构建
@@ -332,6 +334,7 @@ cd pg-server
 npm run verify-v3
 npm run verify-building-catalog
 npm run verify-dynamic-cost
+npm run verify-dynamic-corridor
 npm run verify-dynamic-route
 npm run verify-replanning
 npm run verify-restrictions

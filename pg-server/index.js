@@ -1427,6 +1427,7 @@ app.listen(PORT, () => {
   console.log('  POST /api/v3/operator/tasks/:taskId/dispatch')
   console.log('  POST /api/v3/operator/tasks/:taskId/advance')
   console.log('  POST /api/v3/dynamic-cost/evaluate')
+  console.log('  POST /api/v3/dynamic-cost/corridor')
   console.log('  GET /api/v3/safety/workspace')
   console.log('  POST /api/v3/safety/restrictions')
   console.log('  PATCH /api/v3/safety/restrictions/:restrictionId')

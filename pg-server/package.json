@@ -13,6 +13,7 @@
     "verify-v3": "node verify-v3.js",
     "verify-building-catalog": "node verify-building-catalog.js",
     "verify-dynamic-cost": "node verify-dynamic-cost.js",
+    "verify-dynamic-corridor": "node verify-dynamic-corridor.js",
     "verify-dynamic-route": "node verify-dynamic-route.js",
     "verify-replanning": "node verify-replanning.js",
     "verify-restrictions": "node verify-restrictions.js",

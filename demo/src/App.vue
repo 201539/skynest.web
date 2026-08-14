@@ -257,17 +257,17 @@
         透明度 {{ Math.round(gridAlpha * 100) }}%
         <input type="range" min="0.1" max="1" step="0.05" v-model.number="gridAlpha" @input="onGridAlphaChange" />
       </label>
-      <label class="slider-label">
+      <label v-if="gridDisplayMode !== 'route-dynamic'" class="slider-label">
         高度下限 {{ gridZMin }}m
-        <input type="range" min="0" max="150" step="5" v-model.number="gridZMin" @change="reloadGridsInView" />
+        <input type="range" min="0" max="150" step="5" v-model.number="gridZMin" @change="reloadCurrentGridDisplay" />
       </label>
-      <label class="slider-label">
+      <label v-if="gridDisplayMode !== 'route-dynamic'" class="slider-label">
         高度上限 {{ gridZMax }}m
-        <input type="range" min="50" max="300" step="5" v-model.number="gridZMax" @change="reloadGridsInView" />
+        <input type="range" min="50" max="300" step="5" v-model.number="gridZMax" @change="reloadCurrentGridDisplay" />
       </label>
       <label class="slider-label">
         适宜性筛选
-        <select v-model="gridScorePreset" @change="reloadGridsInView" class="full-width">
+        <select v-model="gridScorePreset" @change="reloadCurrentGridDisplay" class="full-width">
           <option value="all">全部格网</option>
           <option value="risk">风险格网（低于 0.4）</option>
           <option value="caution">需关注格网（低于 0.6）</option>
@@ -275,19 +275,51 @@
         </select>
       </label>
       <button class="full-width-btn" @click="reloadGridsInView" :disabled="gridLoading">
-        {{ gridLoading ? '加载中...' : '刷新当前视口格网' }}
+        {{ gridLoading ? '加载中...' : '显示当前视口静态格网' }}
+      </button>
+      <button
+        v-if="activeRole === ROLE.SCHOOL && currentRoute?.planned"
+        class="full-width-btn dynamic-grid-btn"
+        @click="loadDynamicRouteGrids(currentRoute, { forceCurrentTime: true })"
+        :disabled="gridLoading"
+      >
+        刷新航线动态评分
       </button>
       <p v-if="gridDemoMode" class="hint demo-hint">演示模式：格网数据未导入，显示校区模拟格网</p>
       <p v-else class="hint">
         已显示 {{ gridDisplayCount.toLocaleString() }} 个 · LOD {{ gridLod }}
         <span v-if="gridQueryMs != null"> · 查询 {{ gridQueryMs }}ms</span>
       </p>
-      <p class="hint">80m 飞行高度层 · 自动聚合远处格网 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
+      <p v-if="gridDisplayMode === 'route-dynamic'" class="hint dynamic-grid-hint">
+        航线两侧 {{ gridCorridorMeters }}m · 静态/周期/实时三层 Cost
+        <span v-if="gridDynamicAt"> · {{ formatGridTime(gridDynamicAt) }}</span>
+      </p>
+      <p v-else class="hint">80m 飞行高度层 · 自动聚合远处格网 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
+      <div v-if="gridDynamicSummary && gridDisplayMode === 'route-dynamic'" class="grid-summary-card">
+        <span>可通行 <strong>{{ gridDynamicSummary.passable }}/{{ gridDynamicSummary.total }}</strong></span>
+        <span>阻断 <strong>{{ gridDynamicSummary.blocked }}</strong></span>
+        <span>平均 Cost <strong>{{ Number(gridDynamicSummary.average_traversal_cost || 0).toFixed(2) }}</strong></span>
+      </div>
+      <div v-if="gridSelectedCell" class="grid-detail-card">
+        <div class="grid-detail-title">
+          <strong>格网 {{ gridSelectedCell.grid_code || gridSelectedCell.new_id }}</strong>
+          <button type="button" @click="gridSelectedCell = null">×</button>
+        </div>
+        <div class="grid-layer-scores">
+          <span>静态层 <strong>{{ formatGridScore(gridSelectedCell.layer_scores?.static) }}</strong></span>
+          <span>周期层 <strong>{{ formatGridScore(gridSelectedCell.layer_scores?.periodic) }}</strong></span>
+          <span>实时层 <strong>{{ formatGridScore(gridSelectedCell.layer_scores?.realtime) }}</strong></span>
+        </div>
+        <p>综合适航分：<strong>{{ formatGridScore(gridSelectedCell.suitability_score) }}</strong> · Cost {{ gridSelectedCell.traversal_cost ?? '阻断' }}</p>
+        <p v-if="gridSelectedCell.risk_factors?.length">主要风险：{{ gridSelectedCell.risk_factors.map(riskFactorLabel).join('、') }}</p>
+        <p>数据状态：周期层{{ gridSelectedCell.layer_data_status?.periodic === 'periodic' ? '已匹配' : '使用静态人口' }}；实时天气{{ gridSelectedCell.layer_data_status?.weather === 'realtime' ? '已匹配' : '暂无记录' }}</p>
+        <p v-if="gridSelectedCell.hard_constraints?.length" class="grid-blocked">硬约束：{{ gridSelectedCell.hard_constraints.map(hardConstraintLabel).join('、') }}</p>
+      </div>
     </section>
   </aside>
 
   <div class="legend" :class="`legend-role-${activeRole}`">
-    <h4>适航评分图例</h4>
+    <h4>{{ gridDisplayMode === 'route-dynamic' ? '动态 Cost 适航评分' : '静态适航评分图例' }}</h4>
     <div class="legend-item"><span class="swatch" style="background:#be1414"></span> 0–0.2 严重不适航</div>
     <div class="legend-item"><span class="swatch" style="background:#ff6e14"></span> 0.2–0.4 不适航</div>
     <div class="legend-item"><span class="swatch" style="background:#fae650"></span> 0.4–0.6 基本达标</div>
@@ -341,6 +373,8 @@ async function handleAuthenticated(session) {
   if (session.user.role === ROLE.SCHOOL) {
     await loadCampusPlaces()
     if (fallbackModelEntity) await alignPlacesToModel()
+  } else if (gridDisplayMode.value === 'route-dynamic') {
+    resetDynamicGridDisplay({ reloadStatic: true })
   }
   refreshRoleOverview()
   showStatus(`已登录：${session.user.name} · ${session.user.role_label}`, 3500)
@@ -351,13 +385,25 @@ async function handleLogout() {
   currentUser.value = null
   activeRole.value = ''
   roleOverview.value = null
+  resetDynamicGridDisplay()
 }
 
 function handleAuthExpired() {
   currentUser.value = null
   activeRole.value = ''
   roleOverview.value = null
+  resetDynamicGridDisplay()
   showStatus('登录状态已失效，请重新登录', 4500)
+}
+
+function resetDynamicGridDisplay({ reloadStatic = false } = {}) {
+  if (gridDisplayMode.value !== 'route-dynamic') return
+  gridAbortController?.abort()
+  gridDisplayMode.value = 'viewport-static'
+  gridDynamicAt.value = ''
+  gridDynamicSummary.value = null
+  clearAllGrids()
+  if (reloadStatic && viewer && layers.grid) reloadGridsInView()
 }
 
 function authenticatedHeaders(extra = {}) {
@@ -440,6 +486,12 @@ async function handleViewTaskRoute(payload) {
   layers.route = true
   layers.drone = true
   await loadSelectedRoute(taskRoute, { isPlanned: true, skipEvaluation: true })
+  if (activeRole.value === ROLE.SCHOOL) {
+    await loadDynamicRouteGrids(taskRoute, {
+      forceCurrentTime: !taskRoute.planning_context?.planned_for,
+      at: taskRoute.planning_context?.planned_for,
+    })
+  }
   showReplanOriginalRoute(taskRoute)
   showStatus(taskRoute.replan_summary
     ? `动态重规划完成：航程${formatSignedChange(taskRoute.replan_summary.distance_change_percent)}，风险${formatSignedChange(taskRoute.replan_summary.risk_change_percent)}`
@@ -574,6 +626,8 @@ let gridAbortController = null
 let gridRequestVersion = 0
 let geometryCache = new Map()
 let gridPrimitives = []
+let renderedGridCells = new Map()
+let gridPickHandler = null
 
 const appConfig = reactive({ title: '仙林校区无人机适航评估平台' })
 const csvFiles = ref([])
@@ -625,6 +679,11 @@ const gridDisplayCount = ref(0)
 const gridLod = ref(1)
 const gridQueryMs = ref(null)
 const gridBounds = ref(null)
+const gridDisplayMode = ref('viewport-static')
+const gridDynamicAt = ref('')
+const gridDynamicSummary = ref(null)
+const gridCorridorMeters = ref(90)
+const gridSelectedCell = ref(null)
 const routeEvaluation = ref(null)
 const evaluating = ref(false)
 
@@ -920,6 +979,7 @@ function invalidatePlannedRouteIfStale() {
   selectedRouteId.value = ''
   planResult.value = null
   routeEvaluation.value = null
+  resetDynamicGridDisplay({ reloadStatic: true })
   showStatus('起终点已变更，请重新点击 A* 生成航线', 4500)
 }
 
@@ -1678,6 +1738,7 @@ async function planSmartRoute() {
     layers.route = true
     layers.drone = true
     await loadSelectedRoute(planned, { isPlanned: true, skipCameraFly: true })
+    await loadDynamicRouteGrids(planned)
 
     showStatus(`智能航线已生成：${planned.name}（${data.algorithm}）`, 5000)
   } catch (e) {
@@ -1872,6 +1933,27 @@ function createCesium3DTileset(url, options = {}) {
   return new Cesium.Cesium3DTileset({ url, ...options })
 }
 
+function setupGridPickHandler() {
+  if (!viewer || gridPickHandler) return
+  gridPickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
+  gridPickHandler.setInputAction((movement) => {
+    if (pickModeActive.value || !layers.grid) return
+    const picked = viewer.scene.pick(movement.position)
+    const key = typeof picked?.id === 'string'
+      ? picked.id
+      : typeof picked?.primitive?.id === 'string'
+        ? picked.primitive.id
+        : null
+    const cell = key ? renderedGridCells.get(key) : null
+    if (cell?.suitability_score != null) gridSelectedCell.value = cell
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
+}
+
+function destroyGridPickHandler() {
+  if (gridPickHandler && !gridPickHandler.isDestroyed()) gridPickHandler.destroy()
+  gridPickHandler = null
+}
+
 function removeGridPrimitives(primitives) {
   if (!viewer || viewer.isDestroyed()) return
   for (const prim of primitives) {
@@ -1882,7 +1964,9 @@ function removeGridPrimitives(primitives) {
 function clearAllGrids() {
   removeGridPrimitives(gridPrimitives)
   gridPrimitives = []
+  renderedGridCells = new Map()
   gridDisplayCount.value = 0
+  gridSelectedCell.value = null
 }
 
 async function renderBatchInstances(instances, targetPrimitives) {
@@ -1946,7 +2030,13 @@ function scoreToColor(score) {
   return Cesium.Color.fromBytes(20, 130, 220, 255 * alpha)
 }
 
-function convertToInstances(gridDataList) {
+function gridScore(grid) {
+  const value = grid.suitability_score ?? grid.static_suitability_score
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Cesium.Math.clamp(parsed, 0, 1) : 0
+}
+
+function convertToInstances(gridDataList, targetCellMap = renderedGridCells) {
   const instances = []
   const minBoxHeight = appConfig.grid?.minBoxHeight ?? 8
 
@@ -1957,7 +2047,7 @@ function convertToInstances(gridDataList) {
     let y2 = parseFloat(g.y_max)
     let z1 = parseFloat(g.z_min)
     let z2 = parseFloat(g.z_max)
-    const score = Cesium.Math.clamp(parseFloat(g.static_suitability_score) || 0, 0, 1)
+    const score = gridScore(g)
 
     if ([x1, y1, x2, y2, z1, z2].some((v) => Number.isNaN(v))) continue
     if (x1 === x2) x2 += 0.0001
@@ -1995,7 +2085,10 @@ function convertToInstances(gridDataList) {
       geometryCache.set(cacheKey, boxGeometry)
     }
 
+    const instanceId = `grid-cell:${g.grid_code || g.new_id || `${centerLng.toFixed(7)}:${centerLat.toFixed(7)}`}`
+    targetCellMap.set(instanceId, g)
     instances.push(new Cesium.GeometryInstance({
+      id: instanceId,
       geometry: boxGeometry,
       modelMatrix,
       attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(scoreToColor(score)) },
@@ -2043,6 +2136,132 @@ function getGridScoreFilter() {
   if (gridScorePreset.value === 'caution') return { scoreMax: '0.6' }
   if (gridScorePreset.value === 'suitable') return { scoreMin: '0.6' }
   return {}
+}
+
+function filterGridsByScore(gridDataList) {
+  const filter = getGridScoreFilter()
+  const minimum = filter.scoreMin == null ? null : Number(filter.scoreMin)
+  const maximum = filter.scoreMax == null ? null : Number(filter.scoreMax)
+  return gridDataList.filter((cell) => {
+    const score = gridScore(cell)
+    return (minimum == null || score >= minimum) && (maximum == null || score < maximum)
+  })
+}
+
+function formatGridScore(value) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '—'
+}
+
+function formatGridTime(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(date)
+}
+
+function riskFactorLabel(value) {
+  return ({
+    static_environment: '静态环境', population_density: '人流密度', weather: '天气',
+    construction: '施工', event: '临时事件', data_coverage_gap: '数据缺口',
+    energy: '能源', no_fly_zone: '禁飞区',
+  })[value] || value
+}
+
+function hardConstraintLabel(value) {
+  return ({
+    active_no_fly_zone: '活动禁飞区', static_suitability_below_minimum: '静态适航分过低',
+    wind_speed_exceeds_limit: '风速超限', precipitation_exceeds_limit: '降水超限',
+    visibility_below_minimum: '能见度过低', construction_blocked: '施工阻断', manually_blocked: '人工阻断',
+  })[value] || value
+}
+
+async function replaceRenderedGrids(data, metadata, controller, requestVersion) {
+  const nextPrimitives = []
+  const nextCellMap = new Map()
+  const BATCH = 2000
+  for (let i = 0; i < data.length; i += BATCH) {
+    if (controller.signal.aborted || requestVersion !== gridRequestVersion) {
+      removeGridPrimitives(nextPrimitives)
+      return false
+    }
+    const batch = data.slice(i, i + BATCH)
+    await renderBatchInstances(convertToInstances(batch, nextCellMap), nextPrimitives)
+    loadingProgress.value = (i + batch.length) / Math.max(data.length, 1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  if (controller.signal.aborted || requestVersion !== gridRequestVersion) {
+    removeGridPrimitives(nextPrimitives)
+    return false
+  }
+  const previousPrimitives = gridPrimitives
+  gridPrimitives = nextPrimitives
+  renderedGridCells = nextCellMap
+  removeGridPrimitives(previousPrimitives)
+  gridSelectedCell.value = null
+  gridDisplayCount.value = data.length
+  gridLod.value = metadata.lod || 1
+  gridQueryMs.value = metadata.queryMs ?? null
+  return true
+}
+
+async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
+  const route = routeOverride || currentRoute.value
+  if (activeRole.value !== ROLE.SCHOOL) return
+  if (!viewer || viewer.isDestroyed() || !layers.grid || !route?.points?.length || route.points.length < 2) return
+
+  const requestVersion = ++gridRequestVersion
+  gridAbortController?.abort()
+  const controller = new AbortController()
+  gridAbortController = controller
+  gridLoading.value = true
+  loadingProgress.value = 0.05
+  const startedAt = performance.now()
+  try {
+    const planningAt = options.at || (options.forceCurrentTime
+      ? new Date().toISOString()
+      : planResult.value?.dynamicCost?.sampledAt || new Date().toISOString())
+    const result = await demoApi.getDynamicCostCorridor({
+      route: route.points.map((point) => ({ lng: Number(point.lng), lat: Number(point.lat) })),
+      corridor_meters: gridCorridorMeters.value,
+      z_target: Number(route.points[0]?.height || planFlightHeight.value || 80) - groundHeight.value,
+      cols: 70,
+      rows: 70,
+      at: planningAt,
+      time_zone: 'Asia/Shanghai',
+      profile: 'balanced',
+      thresholds: { minSuitability: appConfig.routePlan?.minScore ?? 0.25 },
+    }, { signal: controller.signal })
+    const data = filterGridsByScore(result.data || [])
+    const rendered = await replaceRenderedGrids(data, {
+      lod: 1,
+      queryMs: Math.round(performance.now() - startedAt),
+    }, controller, requestVersion)
+    if (!rendered) return
+    gridDisplayMode.value = 'route-dynamic'
+    gridDynamicAt.value = result.at
+    gridDynamicSummary.value = result.summary
+    gridCorridorMeters.value = result.corridor_meters || gridCorridorMeters.value
+    gridDemoMode.value = false
+    showStatus(`已显示航线周围 ${data.length} 个动态 Cost 格网（走廊 ${gridCorridorMeters.value}m）`, 5000)
+  } catch (error) {
+    if (error.name === 'AbortError') return
+    console.error('航线动态格网加载失败', error)
+    showStatus(`航线动态格网加载失败：${error.message}`, 6000)
+  } finally {
+    if (requestVersion === gridRequestVersion) {
+      loadingProgress.value = 0
+      gridLoading.value = false
+      gridAbortController = null
+    }
+  }
+}
+
+function reloadCurrentGridDisplay() {
+  if (activeRole.value === ROLE.SCHOOL && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) {
+    return loadDynamicRouteGrids(currentRoute.value, { forceCurrentTime: true })
+  }
+  return reloadGridsInView()
 }
 
 function getViewBbox() {
@@ -2135,7 +2354,6 @@ async function reloadGridsInView() {
   gridAbortController = controller
   gridLoading.value = true
   loadingProgress.value = 0.05
-  const nextPrimitives = []
 
   try {
     let result
@@ -2166,36 +2384,17 @@ async function reloadGridsInView() {
     }
 
     const data = filterGridByFlightLayer(result.data || [])
-    const BATCH = 2000
-    for (let i = 0; i < data.length; i += BATCH) {
-      if (controller.signal.aborted || requestVersion !== gridRequestVersion) {
-        removeGridPrimitives(nextPrimitives)
-        return
-      }
-      const batch = data.slice(i, i + BATCH)
-      await renderBatchInstances(convertToInstances(batch), nextPrimitives)
-      loadingProgress.value = (i + batch.length) / Math.max(data.length, 1)
-      await new Promise((r) => setTimeout(r, 0))
-    }
-
-    if (controller.signal.aborted || requestVersion !== gridRequestVersion) {
-      removeGridPrimitives(nextPrimitives)
-      return
-    }
-
-    const previousPrimitives = gridPrimitives
-    gridPrimitives = nextPrimitives
-    removeGridPrimitives(previousPrimitives)
-    gridDisplayCount.value = data.length
-    gridLod.value = result.lod || 1
-    gridQueryMs.value = result.queryMs ?? null
+    const rendered = await replaceRenderedGrids(data, result, controller, requestVersion)
+    if (!rendered) return
+    gridDisplayMode.value = 'viewport-static'
+    gridDynamicAt.value = ''
+    gridDynamicSummary.value = null
 
     const mode = gridDemoMode.value ? '（演示）' : ''
     const layerHint = appConfig.grid?.flightLayerOnly !== false ? ' · 飞行高度层' : ''
     const lodText = gridLod.value > 1 ? `，LOD ${gridLod.value} 聚合显示` : ''
     showStatus(`已加载视口内 ${data.length.toLocaleString()} 个格网${layerHint}${mode}${lodText}`)
   } catch (e) {
-    removeGridPrimitives(nextPrimitives)
     if (e.name === 'AbortError') return
     console.error('格网加载失败', e)
     showStatus('格网加载失败，请确认 API 服务已启动')
@@ -2210,6 +2409,7 @@ async function reloadGridsInView() {
 
 function scheduleGridReload(delay = appConfig.grid?.reloadDebounceMs ?? 350) {
   if (!layers.grid || !appConfig.grid?.loadOnCameraMove) return
+  if (activeRole.value === ROLE.SCHOOL && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) return
   clearTimeout(gridLoadTimer)
   gridLoadTimer = setTimeout(reloadGridsInView, delay)
 }
@@ -2235,7 +2435,7 @@ async function checkDatabase(showToast = false) {
           showStatus(`数据库已连接 · ${gridTotal.value.toLocaleString()} 条格网`)
           await Promise.all([loadHotspotsIndex(), loadRoutesFromApi()])
         }
-        if (layers.grid && viewer) await reloadGridsInView()
+        if (layers.grid && viewer && gridDisplayMode.value !== 'route-dynamic') await reloadGridsInView()
         return true
       } catch (statsErr) {
         dbConnected.value = false
@@ -2243,7 +2443,7 @@ async function checkDatabase(showToast = false) {
         if (showToast) {
           showStatus('PostgreSQL 在线，但格网数据表损坏或未导入，请运行 import-data.ps1', 6000)
         }
-        if (layers.grid && viewer) await reloadGridsInView()
+        if (layers.grid && viewer && gridDisplayMode.value !== 'route-dynamic') await reloadGridsInView()
         return false
       }
     } catch (e) {
@@ -2317,11 +2517,19 @@ function onRouteSelect() {
   if (!selectedRouteId.value) {
     clearFlightEntities()
     routeEvaluation.value = null
+    resetDynamicGridDisplay({ reloadStatic: true })
     return
+  }
+  const selectedRoute = routes.value.find((route) => route.id === selectedRouteId.value)
+  if (!(activeRole.value === ROLE.SCHOOL && selectedRoute?.planned)) {
+    resetDynamicGridDisplay({ reloadStatic: true })
   }
   layers.route = true
   layers.drone = true
-  loadSelectedRoute()
+  loadSelectedRoute().then(() => {
+    if (activeRole.value === ROLE.SCHOOL && currentRoute.value?.planned && layers.grid) return loadDynamicRouteGrids(currentRoute.value)
+    return undefined
+  })
 }
 
 async function setupTerrain() {
@@ -2864,7 +3072,8 @@ async function toggleHeatmap() {
 function toggleGrid() {
   for (const prim of gridPrimitives) prim.show = layers.grid
   if (layers.grid) {
-    scheduleGridReload()
+    if (activeRole.value === ROLE.SCHOOL && currentRoute.value?.planned) loadDynamicRouteGrids(currentRoute.value)
+    else scheduleGridReload()
   } else {
     gridAbortController?.abort()
     clearAllGrids()
@@ -2882,7 +3091,10 @@ function toggleDrone() {
 
 function onGridAlphaChange() {
   clearTimeout(gridLoadTimer)
-  gridLoadTimer = setTimeout(reloadGridsInView, 200)
+  gridLoadTimer = setTimeout(() => {
+    if (activeRole.value === ROLE.SCHOOL && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) loadDynamicRouteGrids(currentRoute.value)
+    else reloadGridsInView()
+  }, 200)
 }
 
 async function loadAndShow(file) {
@@ -3077,6 +3289,7 @@ onMounted(async () => {
   flyToCampus()
   await new Promise((r) => setTimeout(r, 2500))
   refreshPlanUi()
+  setupGridPickHandler()
 
   cameraMoveHandler = viewer.camera.moveEnd.addEventListener(scheduleGridReload)
   if (layers.grid) await reloadGridsInView()
@@ -3104,6 +3317,7 @@ onUnmounted(() => {
   clearInterval(dbCheckTimer)
   clearInterval(adminTaskTimer)
   destroyPickHandler()
+  destroyGridPickHandler()
   clearPickMarker()
   clearPlanPreviewLine()
   clearPlanSearchBbox()
@@ -3445,6 +3659,21 @@ select {
   width: 100%;
   margin-top: 6px;
 }
+
+.dynamic-grid-btn { margin-top: 7px; border-color: rgba(77, 208, 225, 0.4); color: #80deea; }
+.dynamic-grid-hint { color: #80cbc4; }
+.grid-summary-card { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 7px; }
+.grid-summary-card span { display: flex; flex-direction: column; gap: 2px; padding: 6px 4px; color: #78909c; text-align: center; background: rgba(77, 208, 225, 0.07); border-radius: 5px; font-size: 9px; }
+.grid-summary-card strong { color: #b2ebf2; font-size: 11px; }
+.grid-detail-card { margin-top: 8px; padding: 8px; color: #b0bec5; background: rgba(4, 13, 27, 0.7); border: 1px solid rgba(77, 208, 225, 0.24); border-radius: 7px; font-size: 9px; }
+.grid-detail-title { display: flex; align-items: center; justify-content: space-between; color: #e0f7fa; }
+.grid-detail-title button { padding: 0 4px; color: #90a4ae; background: transparent; border: 0; cursor: pointer; }
+.grid-layer-scores { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 6px; }
+.grid-layer-scores span { display: flex; flex-direction: column; padding: 5px; background: rgba(255, 255, 255, 0.04); border-radius: 4px; }
+.grid-layer-scores strong { color: #80cbc4; }
+.grid-detail-card p { margin: 6px 0 0; line-height: 1.45; }
+.grid-detail-card p strong { color: #e0f2f1; }
+.grid-detail-card .grid-blocked { color: #ffab91; }
 
 .legend {
   position: absolute;
