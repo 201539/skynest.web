@@ -2793,6 +2793,16 @@ function onRouteSelect() {
   })
 }
 
+function createFallbackImageryProvider() {
+  const cfg = appConfig.imagery || {}
+  if (cfg.enabled === false) return false
+  return new Cesium.UrlTemplateImageryProvider({
+    url: cfg.fallbackUrl || 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    maximumLevel: Number(cfg.maximumLevel) || 19,
+    credit: new Cesium.Credit(cfg.credit || 'Tiles © Esri'),
+  })
+}
+
 async function setupTerrain() {
   if (!appConfig.terrain?.enabled) return
   const url = appConfig.terrain.url || './terrain'
@@ -3711,7 +3721,8 @@ onMounted(async () => {
   authReady.value = true
 
   await loadAppConfig()
-  Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_TOKEN || ''
+  const cesiumIonToken = String(import.meta.env.VITE_CESIUM_ION_TOKEN || '').trim()
+  Cesium.Ion.defaultAccessToken = cesiumIonToken
   // 优先加载下拉框数据，避免被 Cesium 初始化阻塞
   await Promise.all([
     loadHotspotsIndex(),
@@ -3721,14 +3732,16 @@ onMounted(async () => {
     legacyToolsEnabled.value ? loadAdminTasks() : Promise.resolve(),
   ])
 
-  viewer = new Cesium.Viewer('cesiumContainer', {
+  const viewerOptions = {
     timeline: true,
     animation: true,
     baseLayerPicker: true,
     geocoder: false,
     homeButton: true,
     sceneModePicker: true,
-  })
+  }
+  if (!cesiumIonToken) viewerOptions.imageryProvider = createFallbackImageryProvider()
+  viewer = new Cesium.Viewer('cesiumContainer', viewerOptions)
   viewer.scene.globe.show = true
   viewer.scene.skyAtmosphere.show = true
   viewer.scene.fog.enabled = true

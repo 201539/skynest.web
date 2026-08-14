@@ -32,6 +32,12 @@
     "enabled": true,
     "url": "./terrain"
   },
+  "imagery": {
+    "enabled": true,
+    "fallbackUrl": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    "maximumLevel": 19,
+    "credit": "Tiles © Esri"
+  },
   "grid": {
     "groundHeight": 55,
     "alpha": 0.7,
