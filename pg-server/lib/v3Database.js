@@ -1,5 +1,6 @@
 const { Pool } = require('pg')
 const { getV3DatabaseConfig } = require('./databaseConfig')
+const periodicContext = require('./periodicContext')
 
 const DEFAULT_DATABASE = 'nanjing_uni_grid_v3_test'
 const READ_ONLY = process.env.PG_V3_READ_ONLY !== 'false'
@@ -86,6 +87,9 @@ async function getStatus() {
       to_regclass('static.grid_3d') IS NOT NULL AS has_static_grid,
       to_regclass('static.buildings') IS NOT NULL AS has_static_buildings,
       to_regclass('periodic.population') IS NOT NULL AS has_periodic_population,
+      to_regclass('periodic.class_periods') IS NOT NULL AS has_class_periods,
+      to_regclass('periodic.access_control') IS NOT NULL AS has_access_control,
+      to_regclass('periodic.consumption') IS NOT NULL AS has_consumption,
       to_regclass('runtime.tasks') IS NOT NULL AS has_runtime_tasks
   `)
   const row = result.rows[0]
@@ -94,6 +98,9 @@ async function getStatus() {
       row.has_static_grid &&
       row.has_static_buildings &&
       row.has_periodic_population &&
+      row.has_class_periods &&
+      row.has_access_control &&
+      row.has_consumption &&
       row.has_runtime_tasks &&
       row.postgis_version
     ),
@@ -534,7 +541,8 @@ async function listDynamicCostInputs(options = {}) {
     `,
     [xMin, xMax, yMin, yMax, zMin, zMax, at, timeZone, limit]
   )
-  return { at, timeZone, rows: result.rows }
+  const rows = await periodicContext.enrichCells(pool, result.rows, { at, timeZone })
+  return { at, timeZone, rows }
 }
 
 async function getDynamicCostSurface(options = {}) {
@@ -683,7 +691,8 @@ async function getDynamicCostSurface(options = {}) {
     `,
     [xMin, xMax, yMin, yMax, zTarget, cols, rows, at, timeZone]
   )
-  return { at, timeZone, cols, rows, cells: result.rows }
+  const cells = await periodicContext.enrichCells(pool, result.rows, { at, timeZone })
+  return { at, timeZone, cols, rows, cells }
 }
 
 async function close() {

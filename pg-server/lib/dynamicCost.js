@@ -17,6 +17,8 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   minSuitability: 0.2,
   populationReference: 1000,
   holidayPopulationFactor: 0.6,
+  classPeriodRiskBoost: 0.12,
+  consumptionRiskScale: 0.8,
   windReference: 10,
   maxWindSpeed: 15,
   precipitationReference: 10,
@@ -117,6 +119,38 @@ function calculatePopulationRisk(cell, context, thresholds) {
   }
 }
 
+function calculatePeriodicRisk(cell, context, thresholds) {
+  const population = calculatePopulationRisk(cell, context, thresholds)
+  const classPeriodApplied = Boolean(context.class_period_active && context.teaching_area)
+  const classPeriodBoost = classPeriodApplied
+    ? clamp01(finiteNumber(thresholds.classPeriodRiskBoost, 0.12))
+    : 0
+  const consumptionValue = Math.max(finiteNumber(context.consumption_value, 0), 0)
+  const consumptionRisk = context.consumption_active
+    ? clamp01(consumptionValue * Math.max(finiteNumber(thresholds.consumptionRiskScale, 0.8), 0))
+    : 0
+  const accessClosed = Boolean(context.access_closed)
+  const accessRisk = accessClosed ? 1 : 0
+  return {
+    ...population,
+    risk: clamp01(Math.max(
+      population.risk + classPeriodBoost,
+      consumptionRisk,
+      accessRisk,
+    )),
+    populationRisk: population.risk,
+    classPeriodApplied,
+    classPeriodBoost,
+    classPeriodNo: context.class_period_no == null ? null : Number(context.class_period_no),
+    teachingArea: Boolean(context.teaching_area),
+    consumptionValue,
+    consumptionRisk,
+    consumptionAreas: asNames(context.consumption_areas),
+    accessClosed,
+    accessControlNames: asNames(context.access_control_names),
+  }
+}
+
 function calculateWeatherRisk(context, thresholds) {
   const windSpeed = Math.max(finiteNumber(context.wind_speed, 0), 0)
   const precipitation = Math.max(finiteNumber(context.precipitation, 0), 0)
@@ -174,7 +208,7 @@ function calculateCellCost(cell, context = {}, options = {}) {
   const model = resolveModel(options)
   const thresholds = model.thresholds
   const staticRisk = calculateStaticRisk(cell)
-  const populationRisk = calculatePopulationRisk(cell, context, thresholds)
+  const periodicRisk = calculatePeriodicRisk(cell, context, thresholds)
   const weatherRisk = calculateWeatherRisk(context, thresholds)
   const runtimeRisk = calculateRuntimeRisk(context)
   const energyRisk = calculateEnergyRisk(context, thresholds)
@@ -198,11 +232,12 @@ function calculateCellCost(cell, context = {}, options = {}) {
     hardConstraints.push('visibility_below_minimum')
   }
   if (context.construction_blocked === true) hardConstraints.push('construction_blocked')
+  if (periodicRisk.accessClosed) hardConstraints.push('periodic_access_closed')
   if (context.force_blocked === true) hardConstraints.push(context.block_reason || 'manually_blocked')
 
   const components = {
     static: staticRisk.risk,
-    population: populationRisk.risk,
+    population: periodicRisk.risk,
     weather: weatherRisk.risk,
     runtime: runtimeRisk.risk,
     energy: energyRisk,
@@ -218,7 +253,10 @@ function calculateCellCost(cell, context = {}, options = {}) {
 
   const riskFactors = []
   if (staticRisk.risk >= 0.6) riskFactors.push('static_environment')
-  if (populationRisk.risk >= 0.6) riskFactors.push('population_density')
+  if (periodicRisk.populationRisk >= 0.6) riskFactors.push('population_density')
+  if (periodicRisk.classPeriodApplied) riskFactors.push('class_period')
+  if (periodicRisk.consumptionRisk > 0) riskFactors.push('consumption_peak')
+  if (periodicRisk.accessClosed) riskFactors.push('access_closed')
   if (weatherRisk.risk >= 0.5) riskFactors.push('weather')
   if (runtimeRisk.constructionNames.length) riskFactors.push('construction')
   if (runtimeRisk.eventNames.length) riskFactors.push('event')
@@ -246,12 +284,23 @@ function calculateCellCost(cell, context = {}, options = {}) {
     risk_factors: [...new Set(riskFactors)],
     layer_scores: {
       static: round(1 - staticRisk.risk),
-      periodic: round(1 - populationRisk.risk),
+      periodic: round(1 - periodicRisk.risk),
       realtime: round(1 - clamp01(realtimeRisk)),
     },
     layer_data_status: {
       static: 'available',
-      periodic: populationRisk.source,
+      periodic: periodicRisk.source,
+      periodic_sources: [
+        periodicRisk.source === 'periodic' ? 'population' : 'static_population',
+        periodicRisk.classPeriodApplied ? 'class_periods' : null,
+        periodicRisk.accessControlNames.length ? 'access_control' : null,
+        periodicRisk.consumptionAreas.length ? 'consumption' : null,
+      ].filter(Boolean),
+      class_periods: periodicRisk.classPeriodApplied ? 'active' : 'inactive',
+      access_control: periodicRisk.accessControlNames.length
+        ? (periodicRisk.accessClosed ? 'closed' : 'open')
+        : 'not_matched',
+      consumption: periodicRisk.consumptionAreas.length ? 'active' : 'inactive',
       weather: weatherRisk.hasData ? 'realtime' : 'not_available',
       runtime: noFlyZoneNames.length || runtimeRisk.constructionNames.length || runtimeRisk.eventNames.length
         ? 'active'
@@ -262,17 +311,31 @@ function calculateCellCost(cell, context = {}, options = {}) {
       no_fly_zones: noFlyZoneNames,
       construction: runtimeRisk.constructionNames,
       events: runtimeRisk.eventNames,
+      class_periods: periodicRisk.classPeriodApplied ? [periodicRisk.classPeriodNo] : [],
+      access_control: periodicRisk.accessControlNames,
+      consumption: periodicRisk.consumptionAreas,
     },
     inputs: {
       static_suitability: round(staticRisk.suitability),
       sensitivity: round(staticRisk.sensitivity),
       privacy: round(staticRisk.privacy),
-      population: round(populationRisk.effectivePopulation, 2),
-      population_source: populationRisk.source,
-      is_holiday: populationRisk.isHoliday,
+      population: round(periodicRisk.effectivePopulation, 2),
+      population_source: periodicRisk.source,
+      is_holiday: periodicRisk.isHoliday,
+      class_period_active: periodicRisk.classPeriodApplied,
+      class_period_no: periodicRisk.classPeriodNo,
+      teaching_area: periodicRisk.teachingArea,
+      consumption_value: round(periodicRisk.consumptionValue, 4),
+      access_closed: periodicRisk.accessClosed,
       wind_speed: round(weatherRisk.windSpeed, 2),
       precipitation: round(weatherRisk.precipitation, 2),
       visibility: round(weatherRisk.visibility, 2),
+    },
+    periodic_breakdown: {
+      population_risk: round(periodicRisk.populationRisk),
+      class_period_boost: round(periodicRisk.classPeriodBoost),
+      consumption_risk: round(periodicRisk.consumptionRisk),
+      access_risk: periodicRisk.accessClosed ? 1 : 0,
     },
     breakdown: Object.fromEntries(
       Object.entries(components).map(([name, value]) => [

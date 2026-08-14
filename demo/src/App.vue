@@ -344,7 +344,8 @@
         </div>
         <p>综合适航分：<strong>{{ formatGridScore(gridSelectedCell.suitability_score) }}</strong> · Cost {{ gridSelectedCell.traversal_cost ?? '阻断' }}</p>
         <p v-if="gridSelectedCell.risk_factors?.length">主要风险：{{ gridSelectedCell.risk_factors.map(riskFactorLabel).join('、') }}</p>
-        <p>数据状态：周期层{{ gridSelectedCell.layer_data_status?.periodic === 'periodic' ? '已匹配' : '使用静态人口' }}；实时天气{{ gridSelectedCell.layer_data_status?.weather === 'realtime' ? '已匹配' : '暂无记录' }}</p>
+        <p>数据状态：周期层{{ formatPeriodicSources(gridSelectedCell) }}；实时天气{{ gridSelectedCell.layer_data_status?.weather === 'realtime' ? '已匹配' : '暂无记录' }}</p>
+        <p v-if="formatPeriodicMatches(gridSelectedCell)">周期命中：{{ formatPeriodicMatches(gridSelectedCell) }}</p>
         <p v-if="gridSelectedCell.hard_constraints?.length" class="grid-blocked">硬约束：{{ gridSelectedCell.hard_constraints.map(hardConstraintLabel).join('、') }}</p>
       </div>
     </section>
@@ -2289,11 +2290,36 @@ function formatGridTime(value) {
   }).format(date)
 }
 
+function periodicSourceLabel(value) {
+  return ({
+    population: '人口热度', static_population: '静态人口', class_periods: '上课时段',
+    access_control: '场馆开放', consumption: '食堂营业',
+  })[value] || value
+}
+
+function formatPeriodicSources(cell) {
+  const sources = cell?.layer_data_status?.periodic_sources || []
+  return sources.length ? `已匹配（${sources.map(periodicSourceLabel).join('、')}）` : '暂无匹配'
+}
+
+function formatPeriodicMatches(cell) {
+  const context = cell?.active_context || {}
+  const parts = []
+  if (context.class_periods?.length) parts.push(`第${context.class_periods.join('、')}节课`)
+  if (context.consumption?.length) parts.push(context.consumption.join('、'))
+  if (context.access_control?.length) {
+    const state = cell?.layer_data_status?.access_control === 'closed' ? '关闭' : '开放'
+    parts.push(`${context.access_control.join('、')}（${state}）`)
+  }
+  return parts.join('；')
+}
+
 function riskFactorLabel(value) {
   return ({
     static_environment: '静态环境', population_density: '人流密度', weather: '天气',
     construction: '施工', event: '临时事件', data_coverage_gap: '数据缺口',
-    energy: '能源', no_fly_zone: '禁飞区',
+    energy: '能源', no_fly_zone: '禁飞区', class_period: '上课时段',
+    consumption_peak: '食堂营业高峰', access_closed: '场馆关闭',
   })[value] || value
 }
 
@@ -2302,6 +2328,7 @@ function hardConstraintLabel(value) {
     active_no_fly_zone: '活动禁飞区', static_suitability_below_minimum: '静态适航分过低',
     wind_speed_exceeds_limit: '风速超限', precipitation_exceeds_limit: '降水超限',
     visibility_below_minimum: '能见度过低', construction_blocked: '施工阻断', manually_blocked: '人工阻断',
+    periodic_access_closed: '场馆关闭时段不可达',
   })[value] || value
 }
 

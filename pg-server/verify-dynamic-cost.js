@@ -37,6 +37,23 @@ function runPureModelChecks() {
     { ...safeCell, static_suitability_score: 0.1 },
     {}
   )
+  const classPeriod = dynamicCost.calculateCellCost(safeCell, {
+    population_value: 100,
+    class_period_active: true,
+    class_period_no: 3,
+    teaching_area: true,
+  })
+  const consumptionPeak = dynamicCost.calculateCellCost(safeCell, {
+    population_value: 100,
+    consumption_active: true,
+    consumption_value: 1,
+    consumption_areas: ['测试食堂'],
+  })
+  const accessClosed = dynamicCost.calculateCellCost(safeCell, {
+    population_value: 100,
+    access_closed: true,
+    access_control_names: ['测试场馆'],
+  })
 
   assert.equal(normal.passable, true)
   assert.ok(crowded.traversal_cost > normal.traversal_cost)
@@ -47,6 +64,13 @@ function runPureModelChecks() {
   assert.ok(severeWind.hard_constraints.includes('wind_speed_exceeds_limit'))
   assert.equal(unsuitable.passable, false)
   assert.ok(unsuitable.hard_constraints.includes('static_suitability_below_minimum'))
+  assert.ok(classPeriod.traversal_cost > normal.traversal_cost)
+  assert.ok(classPeriod.risk_factors.includes('class_period'))
+  assert.ok(classPeriod.layer_data_status.periodic_sources.includes('class_periods'))
+  assert.ok(consumptionPeak.traversal_cost > normal.traversal_cost)
+  assert.ok(consumptionPeak.risk_factors.includes('consumption_peak'))
+  assert.equal(accessClosed.passable, false)
+  assert.ok(accessClosed.hard_constraints.includes('periodic_access_closed'))
 }
 
 async function main() {
@@ -69,6 +93,51 @@ async function main() {
       'Periodic population data was not joined to the V3 grid cells'
     )
 
+    const teaching = await v3Database.listDynamicCostInputs({
+      xMin: 118.95445,
+      xMax: 118.95462,
+      yMin: 32.11374,
+      yMax: 32.11392,
+      zMin: 0,
+      zMax: 200,
+      at: '2026-08-11T10:30:00+08:00',
+      limit: 100,
+    })
+    assert.ok(
+      teaching.rows.some((cell) => cell.class_period_active && cell.teaching_area),
+      'Class-period context was not mapped to teaching-area grids'
+    )
+
+    const dining = await v3Database.listDynamicCostInputs({
+      xMin: 118.94996,
+      xMax: 118.95014,
+      yMin: 32.11336,
+      yMax: 32.11354,
+      zMin: 0,
+      zMax: 200,
+      at: '2026-08-11T12:15:00+08:00',
+      limit: 100,
+    })
+    assert.ok(
+      dining.rows.some((cell) => cell.consumption_active && Number(cell.consumption_value) > 0),
+      'Consumption schedule was not mapped to canteen-area grids'
+    )
+
+    const libraryClosed = await v3Database.listDynamicCostInputs({
+      xMin: 118.95490,
+      xMax: 118.95508,
+      yMin: 32.11623,
+      yMax: 32.11640,
+      zMin: 0,
+      zMax: 200,
+      at: '2026-08-11T23:30:00+08:00',
+      limit: 100,
+    })
+    assert.ok(
+      libraryClosed.rows.some((cell) => cell.access_closed),
+      'Closed access-control schedule was not mapped to library-area grids'
+    )
+
     const baseline = dynamicCost.evaluateCells(source.rows, { profile: 'balanced' })
     const blocked = dynamicCost.evaluateCells(source.rows, {
       profile: 'balanced',
@@ -88,6 +157,11 @@ async function main() {
           database: process.env.PG_V3_DATABASE || v3Database.DEFAULT_DATABASE,
           evaluated_at: source.at,
           evaluated_cells: source.rows.length,
+          periodic_context: {
+            class_periods: teaching.rows.filter((cell) => cell.class_period_active && cell.teaching_area).length,
+            consumption: dining.rows.filter((cell) => cell.consumption_active).length,
+            access_closed: libraryClosed.rows.filter((cell) => cell.access_closed).length,
+          },
           baseline: baselineSummary,
           simulated_no_fly: blockedSummary,
         },
