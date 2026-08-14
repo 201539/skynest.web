@@ -31,6 +31,7 @@ function queryOptions(query) {
     categoryName: query.categoryName,
     vehicleClass: query.vehicleClass,
     minBattery: parseQueryNumber(query.minBattery, 'minBattery'),
+    category: query.category,
   }
 }
 
@@ -41,6 +42,7 @@ function sendQueryError(res, error) {
   const invalidInput = error instanceof TypeError || error instanceof RangeError
   const notFound = [
     'RESTRICTION_NOT_FOUND', 'TASK_NOT_FOUND', 'DRONE_NOT_FOUND', 'NODE_NOT_FOUND',
+    'BUILDING_NOT_FOUND',
   ].includes(error.code)
   const conflict = [
     'TASK_ALREADY_REVIEWED', 'TASK_NOT_DISPATCHABLE', 'TASK_ROUTE_MISSING',
@@ -119,6 +121,62 @@ function createV3Router() {
     try {
       const data = await v3Database.listFixedNodes(queryOptions(req.query))
       res.json({ count: data.length, data })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.get('/fixed-nodes', async (req, res) => {
+    try {
+      const data = await v3Database.listFixedNodes(queryOptions(req.query))
+      res.json({ count: data.length, data })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.get('/buildings', async (req, res) => {
+    try {
+      const data = await v3Database.listBuildings(queryOptions(req.query))
+      res.json({ count: data.length, data })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.get('/buildings/search', async (req, res) => {
+    try {
+      const data = await v3Database.searchBuildings(req.query.q, {
+        limit: req.query.limit,
+      })
+      res.json({ query: String(req.query.q || '').trim(), count: data.length, data })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.get('/buildings/:buildingName/nearest-nodes', async (req, res) => {
+    try {
+      const data = await v3Database.listBuildingNearestNodes(req.params.buildingName, {
+        group: req.query.group,
+        limit: req.query.limit,
+      })
+      res.json({
+        building: data.building,
+        group: data.group,
+        count: data.nodes.length,
+        data: data.nodes,
+      })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.get('/buildings/:buildingName/access-points', async (req, res) => {
+    try {
+      res.json(await v3Database.getBuildingAccessPoints(req.params.buildingName, {
+        limitPerGroup: req.query.limitPerGroup,
+      }))
     } catch (error) {
       sendQueryError(res, error)
     }

@@ -17,6 +17,10 @@ function clampGridDimension(value, fallback = 48) {
   return Math.min(Math.max(parsePositiveInteger(value, fallback), 8), 70)
 }
 
+function normalizeSearchText(value) {
+  return String(value || '').trim()
+}
+
 function optionalNumber(value, fieldName) {
   if (value == null || value === '') return null
   const parsed = Number(value)
@@ -43,6 +47,27 @@ function normalizePointRow(row) {
   return normalized
 }
 
+function normalizeBuildingRow(row) {
+  const normalized = normalizePointRow(row)
+  return {
+    ...normalized,
+    altitude_m: normalized.altitude_m == null ? null : Number(normalized.altitude_m),
+    source_lng: normalized.source_lng == null ? null : Number(normalized.source_lng),
+    source_lat: normalized.source_lat == null ? null : Number(normalized.source_lat),
+    merged_count: Number(normalized.merged_count),
+    match_rank: normalized.match_rank == null ? undefined : Number(normalized.match_rank),
+  }
+}
+
+function normalizeNodeDistanceRow(row) {
+  const normalized = normalizePointRow(row)
+  return {
+    ...normalized,
+    distance_m: normalized.distance_m == null ? null : Number(normalized.distance_m),
+    group_rank: normalized.group_rank == null ? undefined : Number(normalized.group_rank),
+  }
+}
+
 const pool = new Pool(getV3DatabaseConfig({
   max: parsePositiveInteger(process.env.PG_V3_POOL_MAX, 4),
   connectionTimeoutMillis: parsePositiveInteger(process.env.PG_V3_CONNECT_TIMEOUT_MS, 5000),
@@ -59,6 +84,7 @@ async function getStatus() {
       current_setting('default_transaction_read_only')::boolean AS read_only,
       (SELECT extversion FROM pg_extension WHERE extname = 'postgis') AS postgis_version,
       to_regclass('static.grid_3d') IS NOT NULL AS has_static_grid,
+      to_regclass('static.buildings') IS NOT NULL AS has_static_buildings,
       to_regclass('periodic.population') IS NOT NULL AS has_periodic_population,
       to_regclass('runtime.tasks') IS NOT NULL AS has_runtime_tasks
   `)
@@ -66,6 +92,7 @@ async function getStatus() {
   return {
     ok: Boolean(
       row.has_static_grid &&
+      row.has_static_buildings &&
       row.has_periodic_population &&
       row.has_runtime_tasks &&
       row.postgis_version
@@ -102,8 +129,14 @@ async function listFixedNodes(options = {}) {
     `
       SELECT
         node_id, node_code, node_name, node_type,
-        ST_X(location) AS lng, ST_Y(location) AS lat,
-        grid_code, capacity, status, description, created_at, updated_at
+        ST_X(ST_Transform(location, 4326)) AS lng,
+        ST_Y(ST_Transform(location, 4326)) AS lat,
+        grid_code, capacity, status, description, created_at, updated_at,
+        CASE
+          WHEN node_code = 'hub' OR node_code ~ '^[a-e]$' THEN 'departure'
+          WHEN node_code ~ '^[A-G]$' THEN 'receiving'
+          ELSE 'other'
+        END AS service_group
       FROM static.fixed_nodes
       WHERE ($1::text IS NULL OR node_type = $1)
         AND ($2::text IS NULL OR status = $2)
@@ -113,6 +146,190 @@ async function listFixedNodes(options = {}) {
     [options.nodeType || null, options.status || null, limit, offset]
   )
   return result.rows.map((row) => normalizePointRow(row))
+}
+
+async function listBuildings(options = {}) {
+  const limit = clampLimit(options.limit, 100, 1000)
+  const offset = Math.max(Number.parseInt(options.offset, 10) || 0, 0)
+  const category = normalizeSearchText(options.category) || null
+  const result = await pool.query(
+    `
+      SELECT
+        building_id, building_name,
+        ST_X(ST_Transform(location, 4326)) AS lng,
+        ST_Y(ST_Transform(location, 4326)) AS lat,
+        source_lng, source_lat,
+        altitude_m, altitude_is_placeholder, category, merged_count,
+        source_dataset, source_crs, created_at, updated_at
+      FROM static.buildings
+      WHERE ($1::text IS NULL OR category = $1)
+      ORDER BY building_name COLLATE "C", building_id
+      LIMIT $2 OFFSET $3
+    `,
+    [category, limit, offset]
+  )
+  return result.rows.map((row) => normalizeBuildingRow(row))
+}
+
+async function searchBuildings(query, options = {}) {
+  const normalizedQuery = normalizeSearchText(query)
+  if (!normalizedQuery) throw new TypeError('q is required')
+  const limit = clampLimit(options.limit, 10, 50)
+  const result = await pool.query(
+    `
+      WITH matched AS (
+        SELECT
+          building_id, building_name, location,
+          source_lng, source_lat,
+          altitude_m, altitude_is_placeholder, category, merged_count,
+          source_dataset, source_crs, created_at, updated_at,
+          CASE
+            WHEN building_name = $1 THEN 0
+            WHEN lower(building_name) = lower($1) THEN 1
+            WHEN building_name LIKE $1 || '%' THEN 2
+            WHEN building_name ILIKE '%' || $1 || '%' THEN 3
+            ELSE 4
+          END AS match_rank
+        FROM static.buildings
+        WHERE building_name ILIKE '%' || $1 || '%'
+      )
+      SELECT
+        building_id, building_name,
+        ST_X(ST_Transform(location, 4326)) AS lng,
+        ST_Y(ST_Transform(location, 4326)) AS lat,
+        source_lng, source_lat,
+        altitude_m, altitude_is_placeholder, category, merged_count,
+        source_dataset, source_crs, created_at, updated_at,
+        match_rank
+      FROM matched
+      ORDER BY match_rank, length(building_name), building_name COLLATE "C"
+      LIMIT $2
+    `,
+    [normalizedQuery, limit]
+  )
+  return result.rows.map((row) => normalizeBuildingRow(row))
+}
+
+async function getBuildingByName(buildingName, options = {}) {
+  const name = normalizeSearchText(buildingName)
+  if (!name) throw new TypeError('building name is required')
+  const client = options.client || pool
+  const result = await client.query(
+    `
+      SELECT
+        building_id, building_name,
+        ST_X(ST_Transform(location, 4326)) AS lng,
+        ST_Y(ST_Transform(location, 4326)) AS lat,
+        source_lng, source_lat,
+        altitude_m, altitude_is_placeholder, category, merged_count,
+        source_dataset, source_crs, created_at, updated_at
+      FROM static.buildings
+      WHERE building_name = $1
+      LIMIT 1
+    `,
+    [name]
+  )
+  if (!result.rowCount) {
+    const error = new Error(`Building ${name} does not exist`)
+    error.code = 'BUILDING_NOT_FOUND'
+    throw error
+  }
+  return normalizeBuildingRow(result.rows[0])
+}
+
+function normalizeNearestNodeGroup(value) {
+  const group = normalizeSearchText(value || 'all').toLowerCase()
+  if (!['all', 'departure', 'receiving'].includes(group)) {
+    throw new TypeError('group must be all, departure or receiving')
+  }
+  return group
+}
+
+async function listBuildingNearestNodes(buildingName, options = {}) {
+  const name = normalizeSearchText(buildingName)
+  if (!name) throw new TypeError('building name is required')
+  const group = normalizeNearestNodeGroup(options.group)
+  const limit = clampLimit(options.limit, group === 'all' ? 13 : 6, 13)
+  const client = options.client || pool
+  const building = await getBuildingByName(name, { client })
+  const result = await client.query(
+    `
+      SELECT
+        n.node_id, n.node_code, n.node_name, n.node_type,
+        ST_X(ST_Transform(n.location, 4326)) AS lng,
+        ST_Y(ST_Transform(n.location, 4326)) AS lat,
+        n.grid_code, n.capacity, n.status, n.description,
+        d.distance_m,
+        CASE
+          WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
+          WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
+          ELSE 'other'
+        END AS service_group
+      FROM static.building_node_distance d
+      JOIN static.fixed_nodes n ON n.node_code = d.node_code
+      WHERE d.building_name = $1
+        AND (
+          $2 = 'all'
+          OR ($2 = 'departure' AND (n.node_code = 'hub' OR n.node_code ~ '^[a-e]$'))
+          OR ($2 = 'receiving' AND n.node_code ~ '^[A-G]$')
+        )
+      ORDER BY d.distance_m, n.node_id
+      LIMIT $3
+    `,
+    [name, group, limit]
+  )
+  return {
+    building,
+    group,
+    nodes: result.rows.map((row) => normalizeNodeDistanceRow(row)),
+  }
+}
+
+async function getBuildingAccessPoints(buildingName, options = {}) {
+  const name = normalizeSearchText(buildingName)
+  if (!name) throw new TypeError('building name is required')
+  const client = options.client || pool
+  const building = await getBuildingByName(name, { client })
+  const result = await client.query(
+    `
+      WITH ranked AS (
+        SELECT
+          n.node_id, n.node_code, n.node_name, n.node_type,
+          ST_X(ST_Transform(n.location, 4326)) AS lng,
+          ST_Y(ST_Transform(n.location, 4326)) AS lat,
+          n.grid_code, n.capacity, n.status, n.description,
+          d.distance_m,
+          CASE
+            WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
+            WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
+            ELSE 'other'
+          END AS service_group,
+          ROW_NUMBER() OVER (
+            PARTITION BY CASE
+              WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
+              WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
+              ELSE 'other'
+            END
+            ORDER BY d.distance_m, n.node_id
+          ) AS group_rank
+        FROM static.building_node_distance d
+        JOIN static.fixed_nodes n ON n.node_code = d.node_code
+        WHERE d.building_name = $1
+      )
+      SELECT *
+      FROM ranked
+      WHERE service_group IN ('departure', 'receiving')
+        AND group_rank <= $2
+      ORDER BY service_group, group_rank
+    `,
+    [name, clampLimit(options.limitPerGroup, 3, 13)]
+  )
+  const normalized = result.rows.map((row) => normalizeNodeDistanceRow(row))
+  return {
+    building,
+    departure_nodes: normalized.filter((node) => node.service_group === 'departure'),
+    receiving_nodes: normalized.filter((node) => node.service_group === 'receiving'),
+  }
 }
 
 async function listVehicleRules(options = {}) {
@@ -479,6 +696,11 @@ module.exports = {
   getStatus,
   getSummary,
   listFixedNodes,
+  listBuildings,
+  searchBuildings,
+  getBuildingByName,
+  listBuildingNearestNodes,
+  getBuildingAccessPoints,
   listVehicleRules,
   listHighRiskCategories,
   listDrones,

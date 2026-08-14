@@ -128,9 +128,15 @@ PORT=3001                  # API 监听端口
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force
 & ".\pg-server\import-data.ps1"
+cd .\pg-server
+npm run migrate-v3
+npm run verify-building-catalog
+npm run verify-v3
 ```
 
-迁移脚本可重复执行，不会删除已有业务数据。当前 V3 自测可读取约 240 万格网、13 个固定节点和 8 架无人机。
+迁移脚本可重复执行，不会删除已有业务数据。`006_building_catalog.sql` 会导入点位清单中的 83 栋正式建筑坐标，并校验 13 个固定节点和 1,079 条建筑—节点距离矩阵。建筑经纬度来源为 WGS84，数据库按现有空间数据规范存为 SRID 4490；统一的 25 米海拔是占位值，不用于建筑避障。
+
+当前 V3 自测可读取约 240 万格网、83 栋建筑、13 个固定节点和 8 架无人机。
 
 ### 4. 启动项目
 
@@ -303,7 +309,8 @@ DASHSCOPE_MODEL=qwen-plus
 | 分组 | 接口 | 说明 |
 | --- | --- | --- |
 | 数据库 | `GET /api/v3/health`、`GET /api/v3/summary` | V3 状态与表概览 |
-| 静态资源 | `GET /api/v3/nodes`、`/vehicle-rules`、`/high-risk-categories`、`/drones` | 节点、规则和无人机 |
+| 建筑与节点 | `GET /api/v3/buildings`、`/buildings/search`、`/buildings/:name/nearest-nodes`、`/buildings/:name/access-points`、`/fixed-nodes` | 83栋建筑、候选搜索、距离排序和13个固定节点 |
+| 静态规则 | `GET /api/v3/nodes`、`/vehicle-rules`、`/high-risk-categories`、`/drones` | 兼容节点接口、规则和无人机 |
 | Agent | `POST /api/v3/agent/parse`、`GET /api/v3/agent/status`、`PUT /api/v3/agent/config` | 任务解析与解释来源 |
 | 师生任务 | `GET/POST /api/v3/tasks`、`GET /api/v3/student/workspace`、`PUT /api/v3/student/tasks/:taskId/resubmit` | 提交、跟踪及驳回后修改重提 |
 | 校方审核 | `GET /api/v3/reviews`、`POST /api/v3/tasks/:taskId/review` | 审核与生成航线 |
@@ -316,11 +323,12 @@ DASHSCOPE_MODEL=qwen-plus
 
 ## 验证与构建
 
-后端提供 12 项自测，涉及写入的测试均在事务中回滚：
+后端提供建筑目录、V3数据与业务流程自测，涉及写入的测试均在事务中回滚或精确清理：
 
 ```powershell
 cd pg-server
 npm run verify-v3
+npm run verify-building-catalog
 npm run verify-dynamic-cost
 npm run verify-dynamic-route
 npm run verify-replanning
