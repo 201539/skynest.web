@@ -9,22 +9,27 @@ const { buildAgentContext } = require('./llm/agentContext')
 
 async function main() {
   const parsed = await taskAgentService.parseInput(
-    '明天下午4点前，把2公斤实验材料从环境学院送到二期实验楼，需要防震。',
+    '明天下午4点前，把2公斤实验材料从环境学院送到基础实验楼，需要防震。',
     { pool: taskWorkflowStore._pool, now: new Date('2026-08-12T02:00:00Z') },
   )
   assert.equal(parsed.origin, '环境学院')
-  assert.equal(parsed.destination, '二期实验楼')
+  assert.equal(parsed.destination, '基础实验楼')
   assert.equal(parsed.item_category, '实验材料')
   assert.equal(parsed.weight_kg, 2)
   assert.equal(parsed.recommended_vehicle_class, 'micro')
   assert.equal(parsed.needs_manual_review, true)
   assert.ok(parsed.special_requirements.includes('防震'))
-  assert.equal(parsed.agent_analysis.data_source, 'v3_static_rules+campus_places')
+  assert.equal(parsed.agent_analysis.data_source, 'v3_static_buildings+distance_matrix+rules')
+  assert.equal(parsed.agent_analysis.location_matches.origin.selected_building.name, '环境学院')
+  assert.equal(parsed.agent_analysis.location_matches.destination.match_method, 'exact')
+  assert.equal(parsed.agent_analysis.access_point_plan.departure.node_code, 'c')
+  assert.equal(parsed.agent_analysis.access_point_plan.receiving.node_code, 'C')
+  assert.ok(parsed.candidate_node_ids.length > 0)
   assert.equal(parsed.agent_analysis.ai.mode, 'deterministic_fallback')
 
   const tampered = await taskAgentService.verifyStructuredTask({
-    origin: '图书馆',
-    destination: '实验中心',
+    origin: '杜厦图书馆',
+    destination: '基础实验楼',
     item_category: '危险化学品',
     weight_kg: 2,
     deadline: '2026-08-13T16:00',
@@ -39,9 +44,18 @@ async function main() {
   assert.ok(tampered.special_requirements.includes('防漏'))
   assert.equal(tampered.agent_analysis.user_confirmed, true)
 
-  const ambiguous = matchLocation('宿舍', [
-    { node_id: 1, name: '学生公寓区 A', aliases: [] },
-    { node_id: 2, name: '学生公寓区 B', aliases: [] },
+  const unknownBuilding = await taskAgentService.verifyStructuredTask({
+    ...tampered,
+    origin: '不存在的建筑',
+  }, { pool: taskWorkflowStore._pool })
+  assert.throws(
+    () => taskAgentService.assertLocationsMatched(unknownBuilding),
+    (error) => error.code === 'PLACE_NOT_CONFIRMED' && error.details.fields.includes('origin')
+  )
+
+  const ambiguous = matchLocation('学生公寓', [
+    { building_id: 1, name: '学生公寓16幢', aliases: [] },
+    { building_id: 2, name: '学生公寓17幢', aliases: [] },
   ])
   assert.equal(ambiguous.status, 'needs_confirmation')
   assert.equal(ambiguous.selected_node, null)
@@ -84,6 +98,8 @@ async function main() {
     ok: true,
     parsed: {
       route: `${parsed.origin} -> ${parsed.destination}`,
+      departure_node: parsed.agent_analysis.access_point_plan.departure.node_code,
+      receiving_node: parsed.agent_analysis.access_point_plan.receiving.node_code,
       category: parsed.item_category,
       vehicle: parsed.recommended_vehicle_class,
       manual_review: parsed.needs_manual_review,
@@ -95,6 +111,7 @@ async function main() {
       handling: tampered.special_requirements,
     },
     model_status: status,
+    unknown_building_rejected: true,
   }, null, 2))
 }
 

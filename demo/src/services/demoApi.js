@@ -722,6 +722,20 @@ export const demoApi = {
     )
   },
 
+  listBuildings() {
+    return requestV3Json('/buildings?limit=100').then((result) => result.data || [])
+  },
+
+  getBuildingAccessPoints(buildingName, limitPerGroup = 3) {
+    return requestV3Json(
+      `/buildings/${encodeURIComponent(buildingName)}/access-points?limitPerGroup=${encodeURIComponent(limitPerGroup)}`,
+    )
+  },
+
+  listFixedNodes() {
+    return requestV3Json('/fixed-nodes?limit=100').then((result) => result.data || [])
+  },
+
   getAuditWorkspace() {
     return withWorkflowMode(
       () => requestV3Json('/audit'),

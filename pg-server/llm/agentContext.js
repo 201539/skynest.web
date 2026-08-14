@@ -18,8 +18,8 @@ function buildAgentContext(task) {
       special_requirements: task.special_requirements || [],
     },
     node_matching: {
-      origin: analysis.location_matches?.origin?.selected_node?.name || null,
-      destination: analysis.location_matches?.destination?.selected_node?.name || null,
+      origin: analysis.location_matches?.origin?.selected_building?.name || analysis.location_matches?.origin?.selected_node?.name || null,
+      destination: analysis.location_matches?.destination?.selected_building?.name || analysis.location_matches?.destination?.selected_node?.name || null,
       origin_status: analysis.location_matches?.origin?.status || 'unknown',
       destination_status: analysis.location_matches?.destination?.status || 'unknown',
     },

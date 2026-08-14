@@ -113,17 +113,40 @@
           <input v-model.trim="form.requester.department" type="text" readonly />
         </label>
 
-        <label class="form-field">
-          <span>起点 <b>*</b></span>
-          <input v-model.trim="form.origin" type="text" placeholder="例如：环境学院" @input="markAnalysisChanged" />
-          <em v-if="errors.origin">{{ errors.origin }}</em>
-        </label>
+        <BuildingSearchField
+          v-model="form.origin"
+          label="起点建筑"
+          placeholder="输入关键词，如：环境学院"
+          :buildings="buildings"
+          :loading="buildingsLoading"
+          :load-error="buildingsError"
+          :error="errors.origin"
+          :access-point="originAccessPoint"
+          :access-loading="originAccessLoading"
+          access-role="departure"
+          :exclude-name="form.destination"
+          @select="(building) => handleBuildingSelection('origin', building)"
+        />
 
-        <label class="form-field">
-          <span>终点 <b>*</b></span>
-          <input v-model.trim="form.destination" type="text" placeholder="例如：二期实验楼" @input="markAnalysisChanged" />
-          <em v-if="errors.destination">{{ errors.destination }}</em>
-        </label>
+        <BuildingSearchField
+          v-model="form.destination"
+          label="终点建筑"
+          placeholder="输入关键词，如：杜厦图书馆"
+          :buildings="buildings"
+          :loading="buildingsLoading"
+          :load-error="buildingsError"
+          :error="errors.destination"
+          :access-point="destinationAccessPoint"
+          :access-loading="destinationAccessLoading"
+          access-role="receiving"
+          :exclude-name="form.origin"
+          @select="(building) => handleBuildingSelection('destination', building)"
+        />
+
+        <div v-if="buildingsError" class="building-library-error full-span" role="alert">
+          <span>正式建筑库暂时不可用，任务无法提交，避免使用错误坐标。</span>
+          <button type="button" :disabled="buildingsLoading" @click="loadBuildings">重新加载</button>
+        </div>
 
         <label class="form-field">
           <span>物品类型 <b>*</b></span>
@@ -288,6 +311,7 @@ import { APPROVAL_DECISION, TASK_STATUS, createTransportTask, validateTransportT
 import { HIGH_RISK_CATEGORIES, TASK_ITEM_CATEGORIES } from '../domain/taskParser'
 import { demoApi } from '../services/demoApi'
 import RouteExplanationCard from './RouteExplanationCard.vue'
+import BuildingSearchField from './BuildingSearchField.vue'
 
 const emit = defineEmits(['submitted', 'notify', 'view-route'])
 const props = defineProps({
@@ -346,6 +370,17 @@ const tasksError = ref('')
 const selectedTaskId = ref('')
 const editingRejectedTaskId = ref(null)
 const rejectedTaskSnapshot = ref(null)
+const buildings = ref([])
+const buildingsLoading = ref(false)
+const buildingsError = ref('')
+const originBuilding = ref(null)
+const destinationBuilding = ref(null)
+const originAccessPoint = ref(null)
+const destinationAccessPoint = ref(null)
+const originAccessLoading = ref(false)
+const destinationAccessLoading = ref(false)
+let originAccessRequest = 0
+let destinationAccessRequest = 0
 
 const requiresManualReview = computed(() => highRiskCategories.has(form.item_category))
 const confidenceScore = computed(() => Math.max(0, Math.min(100, Number(agentAnalysis.value?.confidence_score) || 0)))
@@ -485,6 +520,79 @@ function getRecognizedFields(parsed) {
     .map(([, label]) => label)
 }
 
+function findExactBuilding(name) {
+  const normalized = String(name || '').trim()
+  return buildings.value.find((building) => building.building_name === normalized) || null
+}
+
+async function loadBuildings() {
+  buildingsLoading.value = true
+  buildingsError.value = ''
+  try {
+    buildings.value = await demoApi.listBuildings()
+    if (buildings.value.length !== 83) {
+      throw new Error(`建筑数量异常：应为83栋，实际返回${buildings.value.length}栋`)
+    }
+    await Promise.all([
+      restoreBuildingSelection('origin'),
+      restoreBuildingSelection('destination'),
+    ])
+  } catch (error) {
+    console.error('正式建筑库加载失败', error)
+    buildings.value = []
+    buildingsError.value = error.message || '请检查后端和数据库迁移'
+  } finally {
+    buildingsLoading.value = false
+  }
+}
+
+async function restoreBuildingSelection(field) {
+  const building = findExactBuilding(form[field])
+  if (!building) return
+  await handleBuildingSelection(field, building, { preserveAnalysis: true })
+}
+
+async function handleBuildingSelection(field, building, options = {}) {
+  const isOrigin = field === 'origin'
+  const buildingRef = isOrigin ? originBuilding : destinationBuilding
+  const accessRef = isOrigin ? originAccessPoint : destinationAccessPoint
+  const loadingRef = isOrigin ? originAccessLoading : destinationAccessLoading
+  const requestNumber = isOrigin ? ++originAccessRequest : ++destinationAccessRequest
+
+  buildingRef.value = building
+  accessRef.value = null
+  loadingRef.value = false
+  delete errors[field]
+  if (!options.preserveAnalysis) markAnalysisChanged()
+  if (!building) return
+
+  form[field] = building.building_name
+  loadingRef.value = true
+  try {
+    const access = await demoApi.getBuildingAccessPoints(building.building_name, 3)
+    const latestRequest = isOrigin ? originAccessRequest : destinationAccessRequest
+    if (requestNumber !== latestRequest) return
+    accessRef.value = isOrigin ? access.departure_nodes?.[0] || null : access.receiving_nodes?.[0] || null
+    if (!accessRef.value) {
+      errors[field] = isOrigin ? '该建筑没有可用起飞节点' : '该建筑没有可用L3接驳箱'
+    }
+  } catch (error) {
+    const latestRequest = isOrigin ? originAccessRequest : destinationAccessRequest
+    if (requestNumber !== latestRequest) return
+    errors[field] = `节点匹配失败：${error.message}`
+  } finally {
+    const latestRequest = isOrigin ? originAccessRequest : destinationAccessRequest
+    if (requestNumber === latestRequest) loadingRef.value = false
+  }
+}
+
+async function applyParsedLocation(field, value) {
+  if (!value) return
+  form[field] = value
+  const exact = findExactBuilding(value)
+  await handleBuildingSelection(field, exact, { preserveAnalysis: true })
+}
+
 async function parseTaskInput() {
   if (parsing.value || !form.input_text) return
 
@@ -494,8 +602,10 @@ async function parseTaskInput() {
 
   try {
     const parsed = await demoApi.parseTask(form.input_text)
-    if (parsed.origin) form.origin = parsed.origin
-    if (parsed.destination) form.destination = parsed.destination
+    await Promise.all([
+      applyParsedLocation('origin', parsed.origin),
+      applyParsedLocation('destination', parsed.destination),
+    ])
     if (parsed.item_category) form.item_category = parsed.item_category
     if (parsed.weight_kg !== null && parsed.weight_kg !== undefined) form.weight_kg = parsed.weight_kg
     if (parsed.deadline) form.deadline = normalizeDeadlineForInput(parsed.deadline)
@@ -573,6 +683,10 @@ function fillFormFromTask(task) {
   parseFeedback.value = null
   parsedFieldLabels.value = []
   clearErrors()
+  Promise.all([
+    restoreBuildingSelection('origin'),
+    restoreBuildingSelection('destination'),
+  ]).catch((error) => console.warn('恢复建筑选择失败', error))
 }
 
 function editRejectedTask(item) {
@@ -616,6 +730,14 @@ function validateForm() {
   }
   if (form.origin && form.destination && form.origin === form.destination) {
     errors.destination = '终点不能与起点相同'
+  }
+  if (buildingsError.value || buildings.value.length !== 83) {
+    formError.value = '正式建筑库尚未加载完成，暂不能提交任务。'
+  } else {
+    if (!findExactBuilding(form.origin)) errors.origin = '请从83栋正式建筑中选择起点'
+    if (!findExactBuilding(form.destination)) errors.destination = '请从83栋正式建筑中选择终点'
+    if (findExactBuilding(form.origin) && !originAccessPoint.value) errors.origin = '起点的可用起飞节点尚未确认'
+    if (findExactBuilding(form.destination) && !destinationAccessPoint.value) errors.destination = '终点的L3接驳箱尚未确认'
   }
 
   if (agentAnalysis.value && !agentConfirmed.value) {
@@ -681,15 +803,24 @@ function resetForm(options = {}) {
     fillFormFromTask(rejectedTaskSnapshot.value)
     return
   }
+  // 让重置前尚未返回的接入点请求失效，避免旧结果回填到空表单。
+  originAccessRequest += 1
+  destinationAccessRequest += 1
   const requester = options.preserveRequester ? { ...form.requester } : {}
   Object.assign(form, createEmptyForm(requester))
+  originBuilding.value = null
+  destinationBuilding.value = null
+  originAccessPoint.value = null
+  destinationAccessPoint.value = null
+  originAccessLoading.value = false
+  destinationAccessLoading.value = false
   specialRequirementsText.value = ''
   clearErrors()
   clearParseFeedback()
   if (!options.preserveResult) lastSubmitted.value = null
 }
 
-onMounted(loadStudentTasks)
+onMounted(() => Promise.all([loadStudentTasks(), loadBuildings()]))
 </script>
 
 <style scoped>
@@ -789,6 +920,30 @@ h2 { margin: 0; font-size: 18px; }
 
 .form-field small { color: #78909c; font-weight: 400; }
 .form-field b { color: #ff8a80; }
+
+.building-library-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px;
+  color: #ffccbc;
+  background: rgba(244, 67, 54, 0.08);
+  border: 1px solid rgba(239, 83, 80, 0.2);
+  border-radius: 7px;
+  font-size: 9px;
+}
+
+.building-library-error button {
+  flex: 0 0 auto;
+  padding: 5px 7px;
+  color: #ffccbc;
+  background: transparent;
+  border: 1px solid rgba(255, 171, 145, 0.3);
+  border-radius: 5px;
+  font-size: 9px;
+  cursor: pointer;
+}
 
 input,
 select,

@@ -8,10 +8,10 @@ const placeResolver = require('./lib/placeResolver')
 
 function sampleTask(overrides = {}) {
   return {
-    input_text: '把800克文件从图书馆送到行政楼，需要防水。',
+    input_text: '把800克文件从杜厦图书馆送到行政南楼，需要防水。',
     requester: { id: 'verify-user', name: '流程自测用户', department: '项目组' },
-    origin: '图书馆',
-    destination: '行政楼',
+    origin: '杜厦图书馆',
+    destination: '行政南楼',
     item_category: '文件图书',
     weight_kg: 0.8,
     deadline: new Date(Date.now() + 4 * 3600000).toISOString(),
@@ -61,10 +61,14 @@ async function main() {
     assert.equal(approved.route.cost_model, 'dynamic-v1')
     assert.ok(approved.route.waypoints.length >= 2)
     assert.ok(approved.route.total_length_meters > 0)
+    assert.equal(approved.route.planning_context.access_points.departure.building_name, '杜厦图书馆')
+    assert.match(approved.route.planning_context.access_points.departure.node_code, /^(hub|[a-e])$/)
+    assert.equal(approved.route.planning_context.access_points.receiving.building_name, '行政南楼')
+    assert.match(approved.route.planning_context.access_points.receiving.node_code, /^[A-G]$/)
 
     const rejectedTask = await taskWorkflowStore.createTask(sampleTask({
-      origin: '南门入口',
-      destination: '食堂',
+      origin: '环境学院',
+      destination: '杜厦图书馆',
     }), { client })
     const rejected = await taskWorkflowStore.reviewTask(rejectedTask.id, {
       decision: 'rejected',
@@ -84,8 +88,8 @@ async function main() {
 
     const revisedDeadline = new Date(Date.now() + 6 * 3600000).toISOString()
     const resubmitted = await taskWorkflowStore.resubmitRejectedTask(rejectedTask.id, sampleTask({
-      origin: '南门入口',
-      destination: '食堂',
+      origin: '环境学院',
+      destination: '杜厦图书馆',
       weight_kg: 0.6,
       deadline: revisedDeadline,
       special_requirements: ['防水', '轻拿轻放'],
@@ -130,6 +134,8 @@ async function main() {
       approved_status: approved.task.status,
       approved_route_model: approved.route.cost_model,
       approved_route_points: approved.route.waypoints.length,
+      approved_departure_node: approved.route.planning_context.access_points.departure.node_code,
+      approved_receiving_node: approved.route.planning_context.access_points.receiving.node_code,
       rejected_status: rejected.task.status,
       resubmitted_status: resubmitted.task.status,
       resubmitted_same_task_id: resubmitted.task.id === rejectedTask.id,

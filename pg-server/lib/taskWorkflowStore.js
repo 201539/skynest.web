@@ -449,8 +449,8 @@ async function resolveTaskPlaces(task, client, options = {}) {
   const resolver = options.placeResolver || placeResolver.resolvePlace
   const flightHeight = Number(options.flightHeight || process.env.DEFAULT_FLIGHT_HEIGHT || 80)
   const [start, end] = await Promise.all([
-    resolver(task.origin, { client, height: flightHeight }),
-    resolver(task.destination, { client, height: flightHeight }),
+    resolver(task.origin, { client, height: flightHeight, role: 'departure' }),
+    resolver(task.destination, { client, height: flightHeight, role: 'receiving' }),
   ])
   return { start, end }
 }
@@ -469,6 +469,10 @@ async function createApprovedRoute(task, client, options = {}) {
     simplifyToleranceMeters: options.simplifyToleranceMeters ?? 8,
     startName: task.origin,
     endName: task.destination,
+    accessPoints: {
+      departure: places.start,
+      receiving: places.end,
+    },
     routeName: `${task.origin} → ${task.destination}`,
     dynamicCostSurfaceProvider: surfaceProvider,
     requireDynamicCost: true,
@@ -483,6 +487,10 @@ async function createApprovedRoute(task, client, options = {}) {
     end: places.end,
     startName: task.origin,
     endName: task.destination,
+    accessPoints: {
+      departure: places.start,
+      receiving: places.end,
+    },
     groundHeight,
     minScore: options.minScore ?? 0.25,
     gridSize,

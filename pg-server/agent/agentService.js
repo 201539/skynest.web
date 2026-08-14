@@ -1,4 +1,3 @@
-const placeResolver = require('../lib/placeResolver')
 const { loadAgentContext } = require('./staticRepository')
 const { processNaturalLanguage, processStructuredTask } = require('./taskOrchestrator')
 const { explainTask, getAgentModelStatus } = require('../llm/agentExplanationService')
@@ -26,7 +25,7 @@ async function withExplanation(task) {
 }
 
 async function contextFor(pool) {
-  return loadAgentContext(pool, placeResolver.supportedPlaceNames())
+  return loadAgentContext(pool)
 }
 
 async function parseInput(inputText, options = {}) {
@@ -43,9 +42,27 @@ async function verifyStructuredTask(input, options = {}) {
   return verified
 }
 
+function assertLocationsMatched(task) {
+  const matches = task?.agent_analysis?.location_matches || {}
+  const invalid = ['origin', 'destination'].filter((field) => matches[field]?.status !== 'matched')
+  if (!invalid.length) return task
+
+  const error = new Error('起点或终点尚未匹配到正式建筑，请从83栋校园建筑中重新选择')
+  error.code = 'PLACE_NOT_CONFIRMED'
+  error.details = {
+    fields: invalid,
+    locations: Object.fromEntries(invalid.map((field) => [field, {
+      input: task?.[field] || '',
+      status: matches[field]?.status || 'not_found',
+      candidates: (matches[field]?.candidates || []).map((item) => item.name).slice(0, 5),
+    }])),
+  }
+  throw error
+}
+
 async function updateModelConfig(values = {}) {
   updateRuntimeLlmConfig(values)
   return getAgentModelStatus()
 }
 
-module.exports = { parseInput, verifyStructuredTask, getAgentModelStatus, updateModelConfig }
+module.exports = { parseInput, verifyStructuredTask, assertLocationsMatched, getAgentModelStatus, updateModelConfig }

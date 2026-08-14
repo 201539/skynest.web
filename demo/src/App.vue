@@ -149,15 +149,19 @@
         <span v-if="planStartPlace.eastMeters != null">
           （相对白模锚点 E{{ Math.round(planStartPlace.eastMeters) }}m N{{ Math.round(planStartPlace.northMeters) }}m）
         </span>
+        <span v-else-if="officialBuildingsLoaded">（V3正式建筑坐标）</span>
       </p>
       <p v-if="planSearchBboxText" class="hint">局部搜索：{{ planSearchBboxText }}</p>
-      <p v-if="!canPlanRoute && campusPlaces.length" class="hint warn-hint">
+      <p v-if="!officialBuildingsLoaded" class="hint warn-hint">
+        正式建筑库尚未加载，旧演示点位不会用于航线规划
+      </p>
+      <p v-else-if="!canPlanRoute && campusPlaces.length" class="hint warn-hint">
         请选择不同的起点与终点建筑
       </p>
       <p v-if="!campusPlaces.length" class="hint warn-hint">建筑列表未加载，请刷新页面</p>
       <div class="row btn-row">
         <button type="button" class="plan-btn" @click="planSmartRoute" :disabled="planning || !canPlanRoute">
-          {{ planning ? 'A* 规划中...' : 'A* 生成航线' }}
+          {{ planning ? '动态 Cost A* 规划中...' : '动态 Cost 生成航线' }}
         </button>
         <button type="button" @click="flyToCampus">飞到校区</button>
       </div>
@@ -177,71 +181,7 @@
       </div>
     </section>
 
-    <section class="panel-section agent-section">
-      <h3>AI Agent 任务申请</h3>
-      <p class="hint">表单保证必填信息完整；Agent匹配校园节点、推荐机型并说明是否可进入航线规划。</p>
-
-      <label class="field-label">起点建筑</label>
-      <select v-model="agentForm.origin" class="full-width">
-        <option value="" disabled>请选择起点</option>
-        <option v-for="p in campusPlaces" :key="'agent-origin-' + p.name" :value="p.name">{{ p.name }}</option>
-      </select>
-
-      <label class="field-label">终点建筑</label>
-      <select v-model="agentForm.destination" class="full-width">
-        <option value="" disabled>请选择终点</option>
-        <option v-for="p in campusPlaces" :key="'agent-destination-' + p.name" :value="p.name">{{ p.name }}</option>
-      </select>
-
-      <label class="field-label">运输物品</label>
-      <select v-model="agentForm.itemCategory" class="full-width">
-        <option v-for="item in agentCategoryOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-      </select>
-
-      <label class="field-label">重量（公斤）</label>
-      <input v-model.number="agentForm.weightKg" class="full-width form-input" type="number" min="0.1" step="0.1" placeholder="例如 2.5" />
-
-      <label class="field-label">期望送达时间</label>
-      <input v-model="agentForm.deadline" class="full-width form-input" type="datetime-local" />
-
-      <label class="field-label">任务优先级</label>
-      <select v-model="agentForm.priority" class="full-width">
-        <option value="normal">常规任务</option>
-        <option value="high">紧急任务</option>
-      </select>
-
-      <label class="field-label">运输要求（可多选）</label>
-      <label v-for="item in agentRequirementOptions" :key="item.value" class="agent-check-item">
-        <input v-model="agentForm.specialRequirements" type="checkbox" :value="item.value" />
-        {{ item.label }}
-      </label>
-
-      <button type="button" class="full-width-btn agent-submit-btn" @click="submitAgentTask" :disabled="agentSubmitting || !agentFormComplete">
-        {{ agentSubmitting ? 'Agent分析中...' : '提交任务并生成建议' }}
-      </button>
-      <p v-if="!agentFormComplete" class="hint warn-hint">请完整选择起终点、物品、重量和期望送达时间。</p>
-
-      <div v-if="agentResult" class="eval-box" :class="agentResult.can_submit_to_algorithm ? 'pass' : 'fail'">
-        <div class="eval-title">Agent 任务预审 · {{ agentWorkflowLabel(agentResult.workflow_status) }}</div>
-        <div>节点：{{ agentResult.location_matches?.origin?.selected_node?.name || '待确认' }} → {{ agentResult.location_matches?.destination?.selected_node?.name || '待确认' }}</div>
-        <div>推荐机型：{{ agentResult.vehicle_recommendation?.vehicle?.label || '需人工审核' }}</div>
-        <div>说明：{{ agentResult.explanation }}</div>
-        <div v-if="agentResult.clarifying_questions?.length" class="agent-questions">
-          <div v-for="question in agentResult.clarifying_questions" :key="question">• {{ question }}</div>
-        </div>
-        <button
-          v-if="agentResult.can_submit_to_algorithm"
-          type="button"
-          class="full-width-btn agent-route-btn"
-          @click="applyAgentTaskToRoutePlanner"
-          :disabled="planning"
-        >
-          {{ planning ? '航线规划中...' : '确认并调用 A* 航线规划' }}
-        </button>
-      </div>
-    </section>
-
-    <section class="panel-section pick-section" :class="{ active: pickModeActive }">
+    <section v-if="activeRole === ROLE.SCHOOL && !officialBuildingsLoaded" class="panel-section pick-section" :class="{ active: pickModeActive }">
       <h3>白模坐标标定</h3>
       <p class="hint">选建筑 → 开始取点 → 点击白模中心（取点后<strong>自动写入</strong>该建筑）</p>
       <label class="field-label">标定建筑</label>
@@ -279,6 +219,12 @@
       <p v-if="campusPlaces.length" class="hint">已标定 {{ campusPlaces.length }} 栋 · 保存前请勿关闭页面</p>
       <button type="button" class="link-btn pick-link" @click="downloadPlacesJson">下载 JSON</button>
       <button type="button" class="link-btn pick-link" @click="copyPlacesJson">复制 JSON</button>
+    </section>
+
+    <section v-else-if="activeRole === ROLE.SCHOOL" class="panel-section official-place-section">
+      <h3>正式建筑坐标</h3>
+      <p class="hint">已从 V3 数据库加载 {{ campusPlaces.length }} 栋建筑，名称和坐标已锁定。</p>
+      <p class="hint">白模手工标定仅作为旧数据维护工具，不会覆盖正式点位。</p>
     </section>
 
     <section class="panel-section">
@@ -389,9 +335,13 @@ const roleOverviewLoading = ref(false)
 const demoApiMode = demoApi.mode
 let roleOverviewRequestVersion = 0
 
-function handleAuthenticated(session) {
+async function handleAuthenticated(session) {
   currentUser.value = session.user
   activeRole.value = session.user.role
+  if (session.user.role === ROLE.SCHOOL) {
+    await loadCampusPlaces()
+    if (fallbackModelEntity) await alignPlacesToModel()
+  }
   refreshRoleOverview()
   showStatus(`已登录：${session.user.name} · ${session.user.role_label}`, 3500)
 }
@@ -679,6 +629,7 @@ const routeEvaluation = ref(null)
 const evaluating = ref(false)
 
 const campusPlaces = ref([])
+const placesSource = ref('')
 const planStartName = ref('')
 const planEndName = ref('')
 const planFlightHeight = ref(80)
@@ -780,39 +731,13 @@ const planEndPlace = computed(() =>
 )
 const canPlanRoute = computed(() =>
   Boolean(
+    officialBuildingsLoaded.value &&
     planStartName.value &&
     planEndName.value &&
     planStartName.value !== planEndName.value
   )
 )
-const agentFormComplete = computed(() =>
-  Boolean(
-    agentForm.origin &&
-    agentForm.destination &&
-    agentForm.itemCategory &&
-    Number(agentForm.weightKg) > 0 &&
-    agentForm.deadline
-  )
-)
-const selectedAdminTask = computed(() => {
-  if (adminTaskDetail.value?.id === selectedAdminTaskId.value) return adminTaskDetail.value
-  return adminTasks.value.find((task) => task.id === selectedAdminTaskId.value) || null
-})
-const adminTaskCounts = computed(() => ({
-  pending: adminTasks.value.filter((task) => task.status === 'PENDING_APPROVAL').length,
-  flying: adminTasks.value.filter((task) => task.status === 'IN_FLIGHT').length,
-  completed: adminTasks.value.filter((task) => task.status === 'COMPLETED').length,
-}))
-const canAdvanceAdminTask = computed(() => [
-  TASK_STATUS_PROVIDER_ACCEPTED,
-  'READY_FOR_TAKEOFF',
-  'IN_FLIGHT',
-].includes(selectedAdminTask.value?.status))
-const canSimulateAdminException = computed(() => [
-  TASK_STATUS_PROVIDER_ACCEPTED,
-  'READY_FOR_TAKEOFF',
-  'IN_FLIGHT',
-].includes(selectedAdminTask.value?.status))
+const officialBuildingsLoaded = computed(() => placesSource.value === 'v3-buildings' && campusPlaces.value.length === 83)
 
 watch([planStartName, planEndName], () => {
   refreshPlanUi()
@@ -1165,7 +1090,9 @@ async function alignPlacesToModel() {
   if (!placeLayoutRaw.length) return
   const preservedPlanned = routes.value.filter((r) => r.planned)
   campusPlaces.value = resolvePlacesFromModelLocal(placeLayoutRaw, fallbackModelEntity)
-  routes.value = [...preservedPlanned, ...buildRoutesFromPlaces()]
+  routes.value = officialBuildingsLoaded.value
+    ? preservedPlanned
+    : [...preservedPlanned, ...buildRoutesFromPlaces()]
   if (!campusPlaces.value.find((p) => p.name === planStartName.value)) {
     planStartName.value = campusPlaces.value[0]?.name || ''
   }
@@ -1173,8 +1100,8 @@ async function alignPlacesToModel() {
     planEndName.value = campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
   }
   const anchor = getModelAnchorDegrees(fallbackModelEntity)
-  const sample = campusPlaces.value.find((p) => p.name === '图书馆') || campusPlaces.value[0]
-  if (sample) {
+  const sample = campusPlaces.value.find((p) => p.name === '杜厦图书馆') || campusPlaces.value[0]
+  if (sample && sample.eastMeters != null) {
     console.info(
       '[places] 白模锚点',
       anchor.lng.toFixed(6),
@@ -1192,44 +1119,39 @@ async function alignPlacesToModel() {
 }
 
 async function loadCampusPlaces() {
-  const url = appConfig.routePlan?.placesUrl || './data/places.json'
   try {
-    let places = []
-    try {
-      const apiData = await fetchJson(`${API_BASE}/places`)
-      places = apiData.places || []
-    } catch {
-      places = await fetchJson(url)
-    }
-    if (Array.isArray(places) && places.length) {
-      const draft = loadPlacesDraft()
-      if (draft?.places?.length) {
-        placeLayoutRaw = draft.places
-        console.info('[places] 已恢复浏览器标定草稿', draft.updatedAt)
-      } else {
-        placeLayoutRaw = places
-      }
+    const buildings = await demoApi.listBuildings()
+    if (Array.isArray(buildings) && buildings.length === 83) {
+      placeLayoutRaw = buildings.map((building) => ({
+        name: building.building_name,
+        lng: Number(building.location.lng),
+        lat: Number(building.location.lat),
+        height: appConfig.routePlan?.defaultFlightHeight || 80,
+        buildingId: building.building_id,
+        category: building.category,
+        source: 'v3-buildings',
+      }))
       campusPlaces.value = resolvePlacesFromModelLocal(placeLayoutRaw, null)
-      planStartName.value = campusPlaces.value[0]?.name || ''
-      planEndName.value = campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
-      if (!agentForm.origin || !campusPlaces.value.find((p) => p.name === agentForm.origin)) {
-        agentForm.origin = campusPlaces.value[0]?.name || ''
-      }
-      if (!agentForm.destination || !campusPlaces.value.find((p) => p.name === agentForm.destination)) {
-        agentForm.destination = campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
-      }
-      if (!pickTargetName.value || !campusPlaces.value.find((p) => p.name === pickTargetName.value)) {
-        pickTargetName.value = campusPlaces.value[0]?.name || ''
-      }
+      placesSource.value = 'v3-buildings'
+      planStartName.value = campusPlaces.value.find((place) => place.name === '环境学院')?.name
+        || campusPlaces.value[0]?.name || ''
+      planEndName.value = campusPlaces.value.find((place) => place.name === '杜厦图书馆')?.name
+        || campusPlaces.value[Math.min(1, campusPlaces.value.length - 1)]?.name || ''
       if (appConfig.routePlan?.defaultFlightHeight != null) {
         planFlightHeight.value = appConfig.routePlan.defaultFlightHeight
       }
       return true
     }
-  } catch (e) {
-    console.warn('建筑列表加载失败', e)
+    throw new Error(`V3正式建筑数量异常：${buildings.length}`)
+  } catch (officialError) {
+    console.warn('V3正式建筑列表加载失败', officialError)
+    placeLayoutRaw = []
+    campusPlaces.value = []
+    planStartName.value = ''
+    planEndName.value = ''
+    placesSource.value = ''
+    return false
   }
-  return false
 }
 
 function getPlacesExportData() {
@@ -1681,7 +1603,7 @@ async function planSmartRoute() {
   planResult.value = null
   routeEvaluation.value = null
 
-  const searchBBox = computeLocalSearchBbox(start, end)
+  let searchBBox = computeLocalSearchBbox(start, end)
   if (!searchBBox || searchBBox.xMax <= searchBBox.xMin || searchBBox.yMax <= searchBBox.yMin) {
     showStatus('局部搜索范围无效，请先点「飞到校区」对齐建筑坐标', 6000)
     planning.value = false
@@ -1695,11 +1617,37 @@ async function planSmartRoute() {
     console.warn('规划标记绘制失败，继续请求后端', e)
   }
 
+  let routeStart = start
+  let routeEnd = end
+  if (officialBuildingsLoaded.value) {
+    try {
+      const [startAccess, endAccess] = await Promise.all([
+        demoApi.getBuildingAccessPoints(start.name, 1),
+        demoApi.getBuildingAccessPoints(end.name, 1),
+      ])
+      routeStart = startAccess.departure_nodes?.[0]
+      routeEnd = endAccess.receiving_nodes?.[0]
+      if (!routeStart || !routeEnd) throw new Error('未找到可用的起飞节点或L3接驳箱')
+      const startLocation = routeStart.location || routeStart
+      const endLocation = routeEnd.location || routeEnd
+      searchBBox = computeLocalSearchBbox(startLocation, endLocation)
+      showPlanSearchBbox(searchBBox)
+      showPlanMarkers(
+        { name: `${start.name} · ${routeStart.node_code}`, ...startLocation },
+        { name: `${end.name} · ${routeEnd.node_code}`, ...endLocation },
+      )
+    } catch (error) {
+      showStatus(`建筑接入点匹配失败：${error.message}`, 7000)
+      planning.value = false
+      return
+    }
+  }
+
   const payload = {
-    start: { lng: start.lng, lat: start.lat, height: planFlightHeight.value },
-    end: { lng: end.lng, lat: end.lat, height: planFlightHeight.value },
-    startName: start.name,
-    endName: end.name,
+    start: { lng: routeStart.location?.lng ?? routeStart.lng, lat: routeStart.location?.lat ?? routeStart.lat, height: planFlightHeight.value },
+    end: { lng: routeEnd.location?.lng ?? routeEnd.lng, lat: routeEnd.location?.lat ?? routeEnd.lat, height: planFlightHeight.value },
+    startName: officialBuildingsLoaded.value ? `${start.name} · ${routeStart.node_code}` : start.name,
+    endName: officialBuildingsLoaded.value ? `${end.name} · ${routeEnd.node_code}` : end.name,
     searchBBox,
     groundHeight: groundHeight.value,
     minScore: appConfig.routePlan?.minScore,
@@ -3091,7 +3039,7 @@ onMounted(async () => {
   await Promise.all([
     loadHotspotsIndex(),
     loadRoutesFromApi(),
-    loadCampusPlaces(),
+    currentUser.value?.role === ROLE.SCHOOL ? loadCampusPlaces() : Promise.resolve(false),
     checkDatabase(),
     loadAdminTasks(),
   ])

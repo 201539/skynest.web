@@ -105,6 +105,20 @@
           audience="school"
         />
 
+        <div v-if="accessPointPlan" class="access-point-card">
+          <div class="section-title">建筑接入方案</div>
+          <div>
+            <span>起点接入</span>
+            <strong>{{ selectedItem.task.origin }} → {{ accessPointPlan.departure.node_code }}</strong>
+            <small>{{ accessPointPlan.departure.node_name }} · 约{{ Math.round(accessPointPlan.departure.distance_m) }}米</small>
+          </div>
+          <div>
+            <span>终点接入</span>
+            <strong>{{ accessPointPlan.receiving.node_code }} → {{ selectedItem.task.destination }}</strong>
+            <small>{{ accessPointPlan.receiving.node_name }} · 约{{ Math.round(accessPointPlan.receiving.distance_m) }}米</small>
+          </div>
+        </div>
+
         <div class="route-card">
           <div class="route-title-row">
             <div class="section-title">推荐航线</div>
@@ -377,6 +391,10 @@ const selectedItem = computed(() => filteredQueue.value.find((item) => item.task
 const requesterLabel = computed(() => {
   const requester = selectedItem.value?.task.requester || {}
   return [requester.name, requester.department].filter(Boolean).join(' · ') || '未填写'
+})
+const accessPointPlan = computed(() => {
+  const plan = selectedItem.value?.task.agent_analysis?.access_point_plan
+  return plan?.departure && plan?.receiving ? plan : null
 })
 const activeRestrictions = computed(() => safetyWorkspace.value.restrictions.filter((item) => item.status === RESTRICTION_STATUS.ACTIVE))
 const replanningStatus = computed(() => safetyWorkspace.value.replanning_status || {})
@@ -739,6 +757,13 @@ onBeforeUnmount(() => clearTimeout(safetyRefreshTimer))
 
 .risk-notice { display: flex; flex-direction: column; gap: 2px; margin-top: 9px; padding: 8px 9px; color: #ffe082; background: rgba(255, 193, 7, 0.07); border: 1px solid rgba(255, 193, 7, 0.24); border-radius: 7px; font-size: 10px; }
 .risk-notice span { color: #cdbf8d; }
+
+.access-point-card { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 9px; padding: 9px; background: rgba(38, 166, 154, 0.07); border: 1px solid rgba(77, 208, 225, 0.18); border-radius: 8px; }
+.access-point-card .section-title { grid-column: 1 / -1; }
+.access-point-card > div:not(.section-title) { display: flex; flex-direction: column; gap: 2px; padding: 6px 7px; background: rgba(4, 13, 27, 0.38); border-radius: 6px; }
+.access-point-card span { color: #78909c; font-size: 8px; }
+.access-point-card strong { color: #b2dfdb; font-size: 9px; }
+.access-point-card small { color: #80cbc4; font-size: 8px; line-height: 1.35; }
 
 .route-card { margin-top: 9px; padding: 9px; background: rgba(4, 13, 27, 0.48); border: 1px solid rgba(144, 202, 249, 0.12); border-radius: 8px; }
 .section-title { color: #dbe9f7; font-size: 11px; font-weight: 700; }

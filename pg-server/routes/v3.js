@@ -53,7 +53,7 @@ function sendQueryError(res, error) {
     'RESTRICTION_NOT_ACTIVE', 'ROUTE_NO_RESTRICTION_CONFLICT',
     'REPLAN_CONFLICT_REMAINS', 'TASK_NOT_STOPPABLE',
   ].includes(error.code)
-  const unprocessable = ['PLACE_NOT_FOUND', 'NO_SAFE_ROUTE'].includes(error.code)
+  const unprocessable = ['PLACE_NOT_FOUND', 'PLACE_NOT_CONFIRMED', 'NO_SAFE_ROUTE'].includes(error.code)
   res.status(invalidInput ? 400 : notFound ? 404 : conflict ? 409 : unprocessable ? 422 : 500).json({
     error: invalidInput
       ? 'invalid_query'
@@ -253,6 +253,7 @@ function createV3Router() {
       const verified = await taskAgentService.verifyStructuredTask(req.body || {}, {
         pool: taskWorkflowStore._pool,
       })
+      taskAgentService.assertLocationsMatched(verified)
       const task = await taskWorkflowStore.createTask({
         ...(req.body || {}),
         ...verified,
@@ -273,6 +274,7 @@ function createV3Router() {
       const verified = await taskAgentService.verifyStructuredTask(req.body || {}, {
         pool: taskWorkflowStore._pool,
       })
+      taskAgentService.assertLocationsMatched(verified)
       const workspace = await taskWorkflowStore.resubmitRejectedTask(
         req.params.taskId,
         { ...(req.body || {}), ...verified },

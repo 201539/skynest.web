@@ -80,6 +80,7 @@ function createPlanningContext(context, plan) {
     end: context.end,
     start_name: context.startName || null,
     end_name: context.endName || null,
+    access_points: context.accessPoints || null,
     search_bbox: plan.searchBBox,
     ground_height: context.groundHeight,
     min_score: context.minScore ?? null,
