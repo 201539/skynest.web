@@ -317,6 +317,10 @@
       >
         刷新航线动态评分
       </button>
+      <label v-if="activeRole === ROLE.SCHOOL && currentRoute?.planned" class="dynamic-auto-refresh">
+        <input v-model="gridAutoRefreshEnabled" type="checkbox" />
+        <span>每 {{ gridAutoRefreshSeconds }} 秒自动刷新</span>
+      </label>
       <p v-if="gridDemoMode" class="hint demo-hint">演示模式：格网数据未导入，显示校区模拟格网</p>
       <p v-else class="hint">
         已显示 {{ gridDisplayCount.toLocaleString() }} 个 · LOD {{ gridLod }}
@@ -326,12 +330,18 @@
         航线两侧 {{ gridCorridorMeters }}m · 静态/周期/实时三层 Cost
         <span v-if="gridDynamicAt"> · {{ formatGridTime(gridDynamicAt) }}</span>
       </p>
+      <p v-if="gridDisplayMode === 'route-dynamic' && gridAutoRefreshEnabled" class="hint dynamic-grid-hint">
+        自动刷新{{ gridAutoRefreshError ? `异常：${gridAutoRefreshError}` : gridAutoRefreshNextAt ? `已开启 · 下次 ${formatGridTime(gridAutoRefreshNextAt)}` : '等待中' }}
+      </p>
       <p v-else class="hint">80m 飞行高度层 · 自动聚合远处格网 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
       <div v-if="gridDynamicSummary && gridDisplayMode === 'route-dynamic'" class="grid-summary-card">
         <span>可通行 <strong>{{ gridDynamicSummary.passable }}/{{ gridDynamicSummary.total }}</strong></span>
         <span>阻断 <strong>{{ gridDynamicSummary.blocked }}</strong></span>
         <span>平均 Cost <strong>{{ Number(gridDynamicSummary.average_traversal_cost || 0).toFixed(2) }}</strong></span>
       </div>
+      <p v-if="gridDynamicSummary?.weather_data && gridDisplayMode === 'route-dynamic'" class="hint">
+        天气数据：实时 {{ gridDynamicSummary.weather_data.realtime || 0 }} · 过期 {{ gridDynamicSummary.weather_data.stale || 0 }} · 缺失 {{ gridDynamicSummary.weather_data.not_available || 0 }}
+      </p>
       <div v-if="gridSelectedCell" class="grid-detail-card">
         <div class="grid-detail-title">
           <strong>格网 {{ gridSelectedCell.grid_code || gridSelectedCell.new_id }}</strong>
@@ -344,7 +354,7 @@
         </div>
         <p>综合适航分：<strong>{{ formatGridScore(gridSelectedCell.suitability_score) }}</strong> · Cost {{ gridSelectedCell.traversal_cost ?? '阻断' }}</p>
         <p v-if="gridSelectedCell.risk_factors?.length">主要风险：{{ gridSelectedCell.risk_factors.map(riskFactorLabel).join('、') }}</p>
-        <p>数据状态：周期层{{ formatPeriodicSources(gridSelectedCell) }}；实时天气{{ gridSelectedCell.layer_data_status?.weather === 'realtime' ? '已匹配' : '暂无记录' }}</p>
+        <p>数据状态：周期层{{ formatPeriodicSources(gridSelectedCell) }}；实时天气{{ formatWeatherStatus(gridSelectedCell) }}</p>
         <p v-if="formatPeriodicMatches(gridSelectedCell)">周期命中：{{ formatPeriodicMatches(gridSelectedCell) }}</p>
         <p v-if="gridSelectedCell.hard_constraints?.length" class="grid-blocked">硬约束：{{ gridSelectedCell.hard_constraints.map(hardConstraintLabel).join('、') }}</p>
       </div>
@@ -438,6 +448,8 @@ function handleAuthExpired() {
 }
 
 function resetDynamicGridDisplay({ reloadStatic = false } = {}) {
+  stopDynamicGridAutoRefresh()
+  gridAutoRefreshError.value = ''
   if (gridDisplayMode.value !== 'route-dynamic') return
   gridAbortController?.abort()
   gridDisplayMode.value = 'viewport-static'
@@ -670,6 +682,7 @@ let pickMarkerEntity = null
 let gridLoadTimer = null
 let dbCheckTimer = null
 let adminTaskTimer = null
+let gridAutoRefreshTimer = null
 let cameraMoveHandler = null
 let gridAbortController = null
 let gridRequestVersion = 0
@@ -735,6 +748,13 @@ const gridDynamicAt = ref('')
 const gridDynamicSummary = ref(null)
 const gridCorridorMeters = ref(90)
 const gridSelectedCell = ref(null)
+const gridAutoRefreshEnabled = ref(true)
+const gridAutoRefreshNextAt = ref('')
+const gridAutoRefreshError = ref('')
+const gridAutoRefreshSeconds = computed(() => Math.max(
+  10,
+  Number(appConfig.grid?.dynamicRefreshSeconds) || 30,
+))
 const routeEvaluation = ref(null)
 const evaluating = ref(false)
 
@@ -2314,12 +2334,26 @@ function formatPeriodicMatches(cell) {
   return parts.join('；')
 }
 
+function formatWeatherStatus(cell) {
+  const weather = cell?.freshness?.weather || {}
+  if (weather.status === 'realtime') {
+    return weather.age_minutes == null ? '已匹配' : `已匹配（${Number(weather.age_minutes).toFixed(1)}分钟前）`
+  }
+  if (weather.status === 'stale') {
+    return weather.age_minutes == null
+      ? '已过期'
+      : `已过期（${Number(weather.age_minutes).toFixed(1)}分钟前，限${Number(weather.max_age_minutes || 30).toFixed(0)}分钟）`
+  }
+  return '暂无记录'
+}
+
 function riskFactorLabel(value) {
   return ({
     static_environment: '静态环境', population_density: '人流密度', weather: '天气',
     construction: '施工', event: '临时事件', data_coverage_gap: '数据缺口',
     energy: '能源', no_fly_zone: '禁飞区', class_period: '上课时段',
     consumption_peak: '食堂营业高峰', access_closed: '场馆关闭',
+    weather_data_stale: '天气数据过期', weather_data_missing: '天气数据缺失',
   })[value] || value
 }
 
@@ -2361,6 +2395,57 @@ async function replaceRenderedGrids(data, metadata, controller, requestVersion) 
   return true
 }
 
+function dynamicGridAutoRefreshEligible() {
+  return Boolean(
+    gridAutoRefreshEnabled.value
+    && activeRole.value === ROLE.SCHOOL
+    && gridDisplayMode.value === 'route-dynamic'
+    && currentRoute.value?.planned
+    && layers.grid
+    && viewer
+    && !viewer.isDestroyed()
+  )
+}
+
+function stopDynamicGridAutoRefresh() {
+  clearTimeout(gridAutoRefreshTimer)
+  gridAutoRefreshTimer = null
+  gridAutoRefreshNextAt.value = ''
+}
+
+function scheduleDynamicGridAutoRefresh(delayMs = gridAutoRefreshSeconds.value * 1000) {
+  stopDynamicGridAutoRefresh()
+  if (!dynamicGridAutoRefreshEligible() || document.hidden) return
+  const safeDelay = Math.max(Number(delayMs) || 0, 500)
+  gridAutoRefreshNextAt.value = new Date(Date.now() + safeDelay).toISOString()
+  gridAutoRefreshTimer = setTimeout(runDynamicGridAutoRefresh, safeDelay)
+}
+
+async function runDynamicGridAutoRefresh() {
+  gridAutoRefreshTimer = null
+  gridAutoRefreshNextAt.value = ''
+  if (!dynamicGridAutoRefreshEligible()) return
+  if (document.hidden || gridLoading.value) {
+    scheduleDynamicGridAutoRefresh()
+    return
+  }
+  await loadDynamicRouteGrids(currentRoute.value, {
+    forceCurrentTime: true,
+    automatic: true,
+    silent: true,
+  })
+}
+
+function handleDocumentVisibilityChange() {
+  if (document.hidden) stopDynamicGridAutoRefresh()
+  else if (dynamicGridAutoRefreshEligible()) scheduleDynamicGridAutoRefresh(1000)
+}
+
+watch(
+  [activeRole, currentRoute, gridDisplayMode, gridAutoRefreshEnabled, () => layers.grid],
+  () => scheduleDynamicGridAutoRefresh(),
+)
+
 async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
   const route = routeOverride || currentRoute.value
   if (activeRole.value !== ROLE.SCHOOL) return
@@ -2386,7 +2471,10 @@ async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
       at: planningAt,
       time_zone: 'Asia/Shanghai',
       profile: 'balanced',
-      thresholds: { minSuitability: appConfig.routePlan?.minScore ?? 0.25 },
+      thresholds: {
+        minSuitability: appConfig.routePlan?.minScore ?? 0.25,
+        weatherFreshnessMinutes: appConfig.grid?.weatherFreshnessMinutes ?? 30,
+      },
     }, { signal: controller.signal })
     const data = filterGridsByScore(result.data || [])
     const rendered = await replaceRenderedGrids(data, {
@@ -2399,16 +2487,21 @@ async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
     gridDynamicSummary.value = result.summary
     gridCorridorMeters.value = result.corridor_meters || gridCorridorMeters.value
     gridDemoMode.value = false
-    showStatus(`已显示航线周围 ${data.length} 个动态 Cost 格网（走廊 ${gridCorridorMeters.value}m）`, 5000)
+    gridAutoRefreshError.value = ''
+    if (!options.silent) {
+      showStatus(`已显示航线周围 ${data.length} 个动态 Cost 格网（走廊 ${gridCorridorMeters.value}m）`, 5000)
+    }
   } catch (error) {
     if (error.name === 'AbortError') return
     console.error('航线动态格网加载失败', error)
-    showStatus(`航线动态格网加载失败：${error.message}`, 6000)
+    if (options.automatic) gridAutoRefreshError.value = error.message
+    else showStatus(`航线动态格网加载失败：${error.message}`, 6000)
   } finally {
     if (requestVersion === gridRequestVersion) {
       loadingProgress.value = 0
       gridLoading.value = false
       gridAbortController = null
+      scheduleDynamicGridAutoRefresh()
     }
   }
 }
@@ -3654,26 +3747,18 @@ onMounted(async () => {
   await checkDatabase()
   startDbWatch()
   adminTaskTimer = setInterval(() => { loadAdminTasks() }, 5000)
-
-  const onKeyDown = (e) => {
-    if (e.key === 'o') flyToCampus()
-    if (e.key === 'h') { layers.heatmap = !layers.heatmap; toggleHeatmap() }
-    if (e.key === 'g') { layers.grid = !layers.grid; toggleGrid() }
-    if (e.key === 'Escape' && (pickModeActive.value || pickModeLoading.value)) exitPickMode()
-  }
-  document.addEventListener('keydown', onKeyDown)
-
-  onUnmounted(() => {
-    document.removeEventListener('keydown', onKeyDown)
-  })
+  document.addEventListener('keydown', handleGlobalKeyDown)
+  document.addEventListener('visibilitychange', handleDocumentVisibilityChange)
 })
 
 onUnmounted(() => {
   globalThis.removeEventListener('skynest-auth-expired', handleAuthExpired)
   document.removeEventListener('keydown', handleGlobalKeyDown)
+  document.removeEventListener('visibilitychange', handleDocumentVisibilityChange)
   clearTimeout(gridLoadTimer)
   clearInterval(dbCheckTimer)
   clearInterval(adminTaskTimer)
+  stopDynamicGridAutoRefresh()
   destroyPickHandler()
   destroyGridPickHandler()
   destroyOfficialFeaturePickHandler()
@@ -4035,6 +4120,8 @@ select {
 }
 
 .dynamic-grid-btn { margin-top: 7px; border-color: rgba(77, 208, 225, 0.4); color: #80deea; }
+.dynamic-auto-refresh { display: flex; align-items: center; gap: 6px; margin-top: 7px; color: #b2dfdb; font-size: 10px; }
+.dynamic-auto-refresh input { width: auto; margin: 0; padding: 0; accent-color: #26c6da; }
 .dynamic-grid-hint { color: #80cbc4; }
 .grid-summary-card { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 7px; }
 .grid-summary-card span { display: flex; flex-direction: column; gap: 2px; padding: 6px 4px; color: #78909c; text-align: center; background: rgba(77, 208, 225, 0.07); border-radius: 5px; font-size: 9px; }

@@ -54,6 +54,27 @@ function runPureModelChecks() {
     access_closed: true,
     access_control_names: ['测试场馆'],
   })
+  const freshWeather = dynamicCost.calculateCellCost(safeCell, {
+    population_value: 100,
+    weather_recorded_at: '2026-08-11T04:20:00.000Z',
+    weather_age_seconds: 600,
+    wind_speed: 2,
+    visibility: 5000,
+  })
+  const staleWeather = dynamicCost.calculateCellCost(safeCell, {
+    population_value: 100,
+    weather_recorded_at: '2026-08-11T02:00:00.000Z',
+    weather_age_seconds: 7200,
+    wind_speed: 2,
+    visibility: 5000,
+  })
+  const missingWeather = dynamicCost.calculateCellCost(safeCell, { population_value: 100 })
+  const staleSevereWind = dynamicCost.calculateCellCost(safeCell, {
+    weather_recorded_at: '2026-08-11T02:00:00.000Z',
+    weather_age_seconds: 7200,
+    wind_speed: 20,
+    visibility: 5000,
+  })
 
   assert.equal(normal.passable, true)
   assert.ok(crowded.traversal_cost > normal.traversal_cost)
@@ -71,6 +92,14 @@ function runPureModelChecks() {
   assert.ok(consumptionPeak.risk_factors.includes('consumption_peak'))
   assert.equal(accessClosed.passable, false)
   assert.ok(accessClosed.hard_constraints.includes('periodic_access_closed'))
+  assert.equal(freshWeather.layer_data_status.weather, 'realtime')
+  assert.equal(staleWeather.layer_data_status.weather, 'stale')
+  assert.equal(missingWeather.layer_data_status.weather, 'not_available')
+  assert.ok(staleWeather.traversal_cost > freshWeather.traversal_cost)
+  assert.ok(missingWeather.risk_factors.includes('weather_data_missing'))
+  assert.ok(staleWeather.risk_factors.includes('weather_data_stale'))
+  assert.equal(staleSevereWind.passable, true)
+  assert.ok(!staleSevereWind.hard_constraints.includes('wind_speed_exceeds_limit'))
 }
 
 async function main() {
@@ -91,6 +120,10 @@ async function main() {
     assert.ok(
       source.rows.some((cell) => cell.population_value != null),
       'Periodic population data was not joined to the V3 grid cells'
+    )
+    assert.ok(
+      source.rows.every((cell) => Object.hasOwn(cell, 'weather_age_seconds')),
+      'Weather freshness age was not returned by the V3 query'
     )
 
     const teaching = await v3Database.listDynamicCostInputs({
@@ -147,6 +180,10 @@ async function main() {
     const blockedSummary = dynamicCost.summarizeCosts(blocked)
 
     assert.equal(baseline.length, source.rows.length)
+    assert.equal(
+      Object.values(baselineSummary.weather_data).reduce((sum, value) => sum + value, 0),
+      source.rows.length
+    )
     assert.equal(blockedSummary.blocked, source.rows.length)
     assert.ok(blocked.every((cell) => cell.hard_constraints.includes('active_no_fly_zone')))
 

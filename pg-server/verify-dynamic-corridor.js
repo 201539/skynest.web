@@ -37,7 +37,14 @@ async function main() {
     ].every((value) => Number.isFinite(Number(value)))))
     assert.ok(result.data.every((cell) => cell.layer_data_status.static === 'available'))
     assert.ok(result.summary.total === result.data.length)
+    assert.equal(
+      Object.values(result.summary.weather_data).reduce((sum, value) => sum + value, 0),
+      result.data.length
+    )
     assert.ok(result.data.some((cell) => cell.inputs.population_source === 'periodic'))
+    assert.ok(result.data.every((cell) => ['realtime', 'stale', 'not_available'].includes(
+      cell.freshness?.weather?.status
+    )))
 
     console.log(JSON.stringify({
       ok: true,

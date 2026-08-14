@@ -42,7 +42,9 @@
     "flightLayerOnly": true,
     "flightHeight": 80,
     "layerTolerance": 20,
-    "minBoxHeight": 6
+    "minBoxHeight": 6,
+    "dynamicRefreshSeconds": 30,
+    "weatherFreshnessMinutes": 30
   },
   "defaultLayers": {
     "terrain": true,

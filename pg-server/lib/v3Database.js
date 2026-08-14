@@ -456,6 +456,7 @@ async function listDynamicCostInputs(options = {}) {
     `
       WITH planning AS (
         SELECT
+          $7::timestamptz AS planned_at,
           $7::timestamptz AT TIME ZONE $8 AS local_at,
           EXTRACT(DOW FROM $7::timestamptz AT TIME ZONE $8)::smallint AS weekday,
           EXTRACT(HOUR FROM $7::timestamptz AT TIME ZONE $8)::smallint AS hour
@@ -469,6 +470,7 @@ async function listDynamicCostInputs(options = {}) {
         population.pop_value AS population_value,
         COALESCE(holiday.is_holiday, false) AS is_holiday,
         weather.recorded_at AS weather_recorded_at,
+        weather.age_seconds AS weather_age_seconds,
         weather.wind_speed, weather.precipitation, weather.visibility,
         COALESCE(no_fly.names, '{}'::text[]) AS no_fly_zone_names,
         COALESCE(construction.names, '{}'::text[]) AS construction_names,
@@ -489,10 +491,13 @@ async function listDynamicCostInputs(options = {}) {
         WHERE h.holiday_date = p.local_at::date
       ) holiday ON true
       LEFT JOIN LATERAL (
-        SELECT w.recorded_at, w.wind_speed, w.precipitation, w.visibility
+        SELECT
+          w.recorded_at,
+          EXTRACT(EPOCH FROM (p.planned_at - w.recorded_at)) AS age_seconds,
+          w.wind_speed, w.precipitation, w.visibility
         FROM runtime.weather w
         WHERE w.grid_code = g.grid_code
-          AND w.recorded_at <= p.local_at
+          AND w.recorded_at <= p.planned_at
         ORDER BY w.recorded_at DESC, w.weather_id DESC
         LIMIT 1
       ) weather ON true
@@ -500,8 +505,8 @@ async function listDynamicCostInputs(options = {}) {
         SELECT ARRAY_AGG(n.name ORDER BY n.zone_id) AS names
         FROM runtime.no_fly_zones n
         WHERE n.status = 'active'
-          AND (n.start_time IS NULL OR n.start_time <= p.local_at)
-          AND (n.end_time IS NULL OR n.end_time >= p.local_at)
+          AND (n.start_time IS NULL OR n.start_time <= p.planned_at)
+          AND (n.end_time IS NULL OR n.end_time >= p.planned_at)
           AND (n.z_min IS NULL OR g.z_max >= n.z_min)
           AND (n.z_max IS NULL OR g.z_min <= n.z_max)
           AND (
@@ -513,8 +518,8 @@ async function listDynamicCostInputs(options = {}) {
         SELECT ARRAY_AGG(c.name ORDER BY c.site_id) AS names
         FROM runtime.construction c
         WHERE c.status = 'ongoing'
-          AND (c.start_time IS NULL OR c.start_time <= p.local_at)
-          AND (c.end_time IS NULL OR c.end_time >= p.local_at)
+          AND (c.start_time IS NULL OR c.start_time <= p.planned_at)
+          AND (c.end_time IS NULL OR c.end_time >= p.planned_at)
           AND (
             (c.grid_code IS NOT NULL AND c.grid_code = g.grid_code)
             OR (c.location IS NOT NULL AND ST_Intersects(c.location, g.geomm))
@@ -524,8 +529,8 @@ async function listDynamicCostInputs(options = {}) {
         SELECT ARRAY_AGG(e.name ORDER BY e.event_id) AS names
         FROM runtime.events e
         WHERE e.status IN ('scheduled', 'ongoing')
-          AND (e.start_time IS NULL OR e.start_time <= p.local_at)
-          AND (e.end_time IS NULL OR e.end_time >= p.local_at)
+          AND (e.start_time IS NULL OR e.start_time <= p.planned_at)
+          AND (e.end_time IS NULL OR e.end_time >= p.planned_at)
           AND (
             (e.grid_code IS NOT NULL AND e.grid_code = g.grid_code)
             OR (e.location IS NOT NULL AND ST_Intersects(e.location, g.geomm))
@@ -563,6 +568,7 @@ async function getDynamicCostSurface(options = {}) {
     `
       WITH planning AS (
         SELECT
+          $8::timestamptz AS planned_at,
           $8::timestamptz AT TIME ZONE $9 AS local_at,
           EXTRACT(DOW FROM $8::timestamptz AT TIME ZONE $9)::smallint AS weekday,
           EXTRACT(HOUR FROM $8::timestamptz AT TIME ZONE $9)::smallint AS hour
@@ -625,6 +631,7 @@ async function getDynamicCostSurface(options = {}) {
         population.pop_value AS population_value,
         COALESCE(holiday.is_holiday, false) AS is_holiday,
         weather.recorded_at AS weather_recorded_at,
+        weather.age_seconds AS weather_age_seconds,
         weather.wind_speed, weather.precipitation, weather.visibility,
         COALESCE(no_fly.names, '{}'::text[]) AS no_fly_zone_names,
         COALESCE(construction.names, '{}'::text[]) AS construction_names,
@@ -645,10 +652,13 @@ async function getDynamicCostSurface(options = {}) {
         WHERE h.holiday_date = p.local_at::date
       ) holiday ON true
       LEFT JOIN LATERAL (
-        SELECT w.recorded_at, w.wind_speed, w.precipitation, w.visibility
+        SELECT
+          w.recorded_at,
+          EXTRACT(EPOCH FROM (p.planned_at - w.recorded_at)) AS age_seconds,
+          w.wind_speed, w.precipitation, w.visibility
         FROM runtime.weather w
         WHERE w.grid_code = g.grid_code
-          AND w.recorded_at <= p.local_at
+          AND w.recorded_at <= p.planned_at
         ORDER BY w.recorded_at DESC, w.weather_id DESC
         LIMIT 1
       ) weather ON true
@@ -656,8 +666,8 @@ async function getDynamicCostSurface(options = {}) {
         SELECT ARRAY_AGG(n.name ORDER BY n.zone_id) AS names
         FROM runtime.no_fly_zones n
         WHERE n.status = 'active'
-          AND (n.start_time IS NULL OR n.start_time <= p.local_at)
-          AND (n.end_time IS NULL OR n.end_time >= p.local_at)
+          AND (n.start_time IS NULL OR n.start_time <= p.planned_at)
+          AND (n.end_time IS NULL OR n.end_time >= p.planned_at)
           AND (n.z_min IS NULL OR g.z_max >= n.z_min)
           AND (n.z_max IS NULL OR g.z_min <= n.z_max)
           AND (
@@ -669,8 +679,8 @@ async function getDynamicCostSurface(options = {}) {
         SELECT ARRAY_AGG(c.name ORDER BY c.site_id) AS names
         FROM runtime.construction c
         WHERE c.status = 'ongoing'
-          AND (c.start_time IS NULL OR c.start_time <= p.local_at)
-          AND (c.end_time IS NULL OR c.end_time >= p.local_at)
+          AND (c.start_time IS NULL OR c.start_time <= p.planned_at)
+          AND (c.end_time IS NULL OR c.end_time >= p.planned_at)
           AND (
             (c.grid_code IS NOT NULL AND c.grid_code = g.grid_code)
             OR (c.location IS NOT NULL AND ST_Intersects(c.location, g.geomm))
@@ -680,8 +690,8 @@ async function getDynamicCostSurface(options = {}) {
         SELECT ARRAY_AGG(e.name ORDER BY e.event_id) AS names
         FROM runtime.events e
         WHERE e.status IN ('scheduled', 'ongoing')
-          AND (e.start_time IS NULL OR e.start_time <= p.local_at)
-          AND (e.end_time IS NULL OR e.end_time >= p.local_at)
+          AND (e.start_time IS NULL OR e.start_time <= p.planned_at)
+          AND (e.end_time IS NULL OR e.end_time >= p.planned_at)
           AND (
             (e.grid_code IS NOT NULL AND e.grid_code = g.grid_code)
             OR (e.location IS NOT NULL AND ST_Intersects(e.location, g.geomm))

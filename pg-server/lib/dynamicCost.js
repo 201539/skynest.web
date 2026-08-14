@@ -25,6 +25,9 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   maxPrecipitation: 20,
   visibilityReference: 5000,
   minVisibility: 300,
+  weatherFreshnessMinutes: 30,
+  staleWeatherRisk: 0.35,
+  missingWeatherRisk: 0.25,
   batteryReservePercent: 20,
   verticalReferenceMeters: 80,
 })
@@ -152,6 +155,11 @@ function calculatePeriodicRisk(cell, context, thresholds) {
 }
 
 function calculateWeatherRisk(context, thresholds) {
+  const hasData = Boolean(context.weather_recorded_at)
+  const ageSeconds = finiteNumber(context.weather_age_seconds)
+  const freshnessMinutes = Math.max(finiteNumber(thresholds.weatherFreshnessMinutes, 30), 1)
+  const ageMinutes = ageSeconds == null ? null : Math.max(ageSeconds / 60, 0)
+  const isFresh = hasData && (ageMinutes == null || ageMinutes <= freshnessMinutes)
   const windSpeed = Math.max(finiteNumber(context.wind_speed, 0), 0)
   const precipitation = Math.max(finiteNumber(context.precipitation, 0), 0)
   const visibility = Math.max(finiteNumber(context.visibility, thresholds.visibilityReference), 0)
@@ -162,15 +170,27 @@ function calculateWeatherRisk(context, thresholds) {
   const visibilityRisk = clamp01(
     1 - visibility / Math.max(finiteNumber(thresholds.visibilityReference, 5000), 1)
   )
+  const measuredRisk = clamp01(windRisk * 0.5 + precipitationRisk * 0.3 + visibilityRisk * 0.2)
+  const freshnessRisk = !hasData
+    ? clamp01(finiteNumber(thresholds.missingWeatherRisk, 0.25))
+    : isFresh
+      ? 0
+      : clamp01(finiteNumber(thresholds.staleWeatherRisk, 0.35))
   return {
-    risk: clamp01(windRisk * 0.5 + precipitationRisk * 0.3 + visibilityRisk * 0.2),
+    risk: Math.max(measuredRisk, freshnessRisk),
+    measuredRisk,
+    freshnessRisk,
     windSpeed,
     precipitation,
     visibility,
     windRisk,
     precipitationRisk,
     visibilityRisk,
-    hasData: Boolean(context.weather_recorded_at),
+    hasData,
+    isFresh,
+    ageMinutes,
+    freshnessMinutes,
+    status: !hasData ? 'not_available' : isFresh ? 'realtime' : 'stale',
   }
 }
 
@@ -219,14 +239,14 @@ function calculateCellCost(cell, context = {}, options = {}) {
   if (staticRisk.suitability < finiteNumber(thresholds.minSuitability, 0.2)) {
     hardConstraints.push('static_suitability_below_minimum')
   }
-  if (weatherRisk.windSpeed >= finiteNumber(thresholds.maxWindSpeed, 15)) {
+  if (weatherRisk.isFresh && weatherRisk.windSpeed >= finiteNumber(thresholds.maxWindSpeed, 15)) {
     hardConstraints.push('wind_speed_exceeds_limit')
   }
-  if (weatherRisk.precipitation >= finiteNumber(thresholds.maxPrecipitation, 20)) {
+  if (weatherRisk.isFresh && weatherRisk.precipitation >= finiteNumber(thresholds.maxPrecipitation, 20)) {
     hardConstraints.push('precipitation_exceeds_limit')
   }
   if (
-    weatherRisk.hasData &&
+    weatherRisk.isFresh &&
     weatherRisk.visibility <= finiteNumber(thresholds.minVisibility, 300)
   ) {
     hardConstraints.push('visibility_below_minimum')
@@ -257,7 +277,9 @@ function calculateCellCost(cell, context = {}, options = {}) {
   if (periodicRisk.classPeriodApplied) riskFactors.push('class_period')
   if (periodicRisk.consumptionRisk > 0) riskFactors.push('consumption_peak')
   if (periodicRisk.accessClosed) riskFactors.push('access_closed')
-  if (weatherRisk.risk >= 0.5) riskFactors.push('weather')
+  if (weatherRisk.measuredRisk >= 0.5) riskFactors.push('weather')
+  if (weatherRisk.status === 'stale') riskFactors.push('weather_data_stale')
+  if (weatherRisk.status === 'not_available') riskFactors.push('weather_data_missing')
   if (runtimeRisk.constructionNames.length) riskFactors.push('construction')
   if (runtimeRisk.eventNames.length) riskFactors.push('event')
   if (runtimeRisk.coverageRisk > 0) riskFactors.push('data_coverage_gap')
@@ -301,7 +323,7 @@ function calculateCellCost(cell, context = {}, options = {}) {
         ? (periodicRisk.accessClosed ? 'closed' : 'open')
         : 'not_matched',
       consumption: periodicRisk.consumptionAreas.length ? 'active' : 'inactive',
-      weather: weatherRisk.hasData ? 'realtime' : 'not_available',
+      weather: weatherRisk.status,
       runtime: noFlyZoneNames.length || runtimeRisk.constructionNames.length || runtimeRisk.eventNames.length
         ? 'active'
         : 'no_active_event',
@@ -330,6 +352,16 @@ function calculateCellCost(cell, context = {}, options = {}) {
       wind_speed: round(weatherRisk.windSpeed, 2),
       precipitation: round(weatherRisk.precipitation, 2),
       visibility: round(weatherRisk.visibility, 2),
+      weather_age_minutes: round(weatherRisk.ageMinutes, 2),
+      weather_freshness_minutes: round(weatherRisk.freshnessMinutes, 2),
+    },
+    freshness: {
+      weather: {
+        status: weatherRisk.status,
+        recorded_at: context.weather_recorded_at || null,
+        age_minutes: round(weatherRisk.ageMinutes, 2),
+        max_age_minutes: round(weatherRisk.freshnessMinutes, 2),
+      },
     },
     periodic_breakdown: {
       population_risk: round(periodicRisk.populationRisk),
@@ -387,6 +419,11 @@ function summarizeCosts(results) {
       blockedReasons[reason] = (blockedReasons[reason] || 0) + 1
     }
   }
+  const weatherStatus = { realtime: 0, stale: 0, not_available: 0 }
+  for (const result of results) {
+    const status = result.layer_data_status?.weather || 'not_available'
+    weatherStatus[status] = (weatherStatus[status] || 0) + 1
+  }
   return {
     total: results.length,
     passable: passable.length,
@@ -397,6 +434,7 @@ function summarizeCosts(results) {
     min_traversal_cost: costs.length ? round(Math.min(...costs)) : null,
     max_traversal_cost: costs.length ? round(Math.max(...costs)) : null,
     blocked_reasons: blockedReasons,
+    weather_data: weatherStatus,
   }
 }
 
