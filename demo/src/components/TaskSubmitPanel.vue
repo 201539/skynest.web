@@ -310,6 +310,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { APPROVAL_DECISION, TASK_STATUS, createTransportTask, validateTransportTask } from '../domain/contracts'
 import { HIGH_RISK_CATEGORIES, TASK_ITEM_CATEGORIES } from '../domain/taskParser'
 import { demoApi } from '../services/demoApi'
+import { findExactBuilding as findExactBuildingInList } from '../utils/buildingSearch'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 import BuildingSearchField from './BuildingSearchField.vue'
 
@@ -521,8 +522,7 @@ function getRecognizedFields(parsed) {
 }
 
 function findExactBuilding(name) {
-  const normalized = String(name || '').trim()
-  return buildings.value.find((building) => building.building_name === normalized) || null
+  return findExactBuildingInList(buildings.value, name)
 }
 
 async function loadBuildings() {
