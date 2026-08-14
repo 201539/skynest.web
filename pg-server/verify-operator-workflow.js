@@ -63,9 +63,22 @@ async function main() {
       (item.battery_percent == null || item.battery_percent >= 20) &&
       (item.payload_kg == null || item.payload_kg >= submitted.weight_kg)
     ))
-    const node = beforeDispatch.nodes.find((item) => item.availability === 'available')
+    const routeNodeId = Number(approved.route?.planning_context?.access_points?.receiving?.node_id)
+    const node = beforeDispatch.nodes.find((item) => item.availability === 'available' && item.id === routeNodeId)
+    const wrongNode = beforeDispatch.nodes.find((item) => item.availability === 'available' && item.id !== routeNodeId)
     assert.ok(drone, 'verification needs one available drone')
-    assert.ok(node, 'verification needs one available transfer node')
+    assert.ok(node, 'verification needs the planned receiving node to be available')
+
+    if (wrongNode) {
+      await assert.rejects(
+        () => operatorWorkflowStore.dispatchTask(submitted.id, {
+          drone_id: drone.id,
+          node_id: wrongNode.id,
+          actor: '运营闭环自动测试',
+        }, { client }),
+        (error) => error.code === 'NODE_ROUTE_MISMATCH'
+      )
+    }
 
     const dispatched = await operatorWorkflowStore.dispatchTask(submitted.id, {
       drone_id: drone.id,

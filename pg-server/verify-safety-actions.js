@@ -151,9 +151,10 @@ async function main() {
       (item.battery_percent == null || item.battery_percent >= 20) &&
       (item.payload_kg == null || item.payload_kg >= submitted.weight_kg)
     ))
-    const node = operatorWorkspace.nodes.find((item) => item.availability === 'available')
+    const routeNodeId = Number(approved.route?.planning_context?.access_points?.receiving?.node_id)
+    const node = operatorWorkspace.nodes.find((item) => item.availability === 'available' && item.id === routeNodeId)
     assert.ok(drone, 'verification needs one available drone')
-    assert.ok(node, 'verification needs one available transfer node')
+    assert.ok(node, 'verification needs the planned receiving node to be available')
     await operatorWorkflowStore.dispatchTask(submitted.id, {
       drone_id: drone.id,
       node_id: node.id,

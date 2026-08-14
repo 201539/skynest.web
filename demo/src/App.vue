@@ -24,6 +24,10 @@
 
   <TaskSubmitPanel
     v-if="activeRole === ROLE.STUDENT"
+    id="role-workspace-panel"
+    :class="{ 'role-panel-collapsed': rightPanelCollapsed }"
+    :aria-hidden="rightPanelCollapsed"
+    :inert="rightPanelCollapsed"
     :current-user="currentUser"
     @notify="showStatus"
     @view-route="handleViewTaskRoute"
@@ -31,6 +35,10 @@
 
   <SchoolReviewPanel
     v-else-if="activeRole === ROLE.SCHOOL"
+    id="role-workspace-panel"
+    :class="{ 'role-panel-collapsed': rightPanelCollapsed }"
+    :aria-hidden="rightPanelCollapsed"
+    :inert="rightPanelCollapsed"
     @notify="showStatus"
     @view-route="handleViewTaskRoute"
     @safety-updated="handleSafetyUpdated"
@@ -39,11 +47,29 @@
 
   <OperatorTaskPanel
     v-else-if="activeRole === ROLE.OPERATOR"
+    id="role-workspace-panel"
+    :class="{ 'role-panel-collapsed': rightPanelCollapsed }"
+    :aria-hidden="rightPanelCollapsed"
+    :inert="rightPanelCollapsed"
     @notify="showStatus"
     @view-route="handleViewTaskRoute"
   />
 
-  <aside class="side-panel">
+  <button
+    v-if="currentUser"
+    type="button"
+    class="panel-edge-toggle right-panel-toggle"
+    :class="{ collapsed: rightPanelCollapsed }"
+    :title="rightPanelCollapsed ? '展开任务工作台' : '收起任务工作台'"
+    :aria-label="rightPanelCollapsed ? '展开右侧任务工作台' : '收起右侧任务工作台'"
+    :aria-expanded="!rightPanelCollapsed"
+    aria-controls="role-workspace-panel"
+    @click="rightPanelCollapsed = !rightPanelCollapsed"
+  >
+    <span aria-hidden="true">{{ rightPanelCollapsed ? '‹' : '›' }}</span>
+  </button>
+
+  <aside id="map-control-panel" class="side-panel" :class="{ 'panel-collapsed': leftPanelCollapsed }" :aria-hidden="leftPanelCollapsed" :inert="leftPanelCollapsed">
     <section v-if="legacyToolsEnabled && activeRole === ROLE.SCHOOL" class="panel-section admin-task-section">
       <div class="admin-title-row">
         <h3>校方任务中心</h3>
@@ -355,6 +381,19 @@
     </section>
   </aside>
 
+  <button
+    type="button"
+    class="panel-edge-toggle left-panel-toggle"
+    :class="{ collapsed: leftPanelCollapsed }"
+    :title="leftPanelCollapsed ? '展开地图控制面板' : '收起地图控制面板'"
+    :aria-label="leftPanelCollapsed ? '展开左侧地图控制面板' : '收起左侧地图控制面板'"
+    :aria-expanded="!leftPanelCollapsed"
+    aria-controls="map-control-panel"
+    @click="leftPanelCollapsed = !leftPanelCollapsed"
+  >
+    <span aria-hidden="true">{{ leftPanelCollapsed ? '›' : '‹' }}</span>
+  </button>
+
   <div class="legend" :class="`legend-role-${activeRole}`">
     <h4>{{ gridDisplayMode === 'route-dynamic' ? '动态 Cost 适航评分' : '静态适航评分图例' }}</h4>
     <div class="legend-item"><span class="swatch" style="background:#be1414"></span> 0–0.2 严重不适航</div>
@@ -402,6 +441,8 @@ const API_BASE = '/api'
 const activeRole = ref('')
 const currentUser = ref(null)
 const authReady = ref(false)
+const leftPanelCollapsed = ref(false)
+const rightPanelCollapsed = ref(false)
 
 async function handleAuthenticated(session) {
   currentUser.value = session.user
@@ -3858,13 +3899,20 @@ onUnmounted(() => {
 }
 
 .header-status {
-  flex: 1;
+  flex: 0 0 auto;
   min-width: 0;
+  margin-right: 152px;
+  padding: 5px 10px;
   font-size: 12px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  color: #e6f4ff;
+  background: rgba(8, 19, 38, 0.72);
+  border: 1px solid rgba(144, 202, 249, 0.2);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   pointer-events: auto;
   white-space: nowrap;
 }
@@ -3920,7 +3968,7 @@ onUnmounted(() => {
 
 @media (max-width: 1100px) {
   .header-title { display: none; }
-  .header-status { flex: 0 1 auto; }
+  .header-status { flex: 0 1 auto; margin-right: 140px; }
 }
 
 .side-panel {
@@ -3936,6 +3984,72 @@ onUnmounted(() => {
   padding: 12px;
   box-sizing: border-box;
   backdrop-filter: blur(8px);
+  transition: transform 220ms ease, opacity 180ms ease;
+  will-change: transform;
+}
+
+.side-panel.panel-collapsed {
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.panel-edge-toggle {
+  position: absolute;
+  top: 88px;
+  z-index: 1200;
+  display: grid;
+  width: 30px;
+  height: 54px;
+  padding: 0;
+  place-items: center;
+  color: #d9f2ff;
+  background: linear-gradient(180deg, rgba(15, 43, 72, 0.96), rgba(7, 24, 45, 0.94));
+  border: 1px solid rgba(100, 181, 246, 0.42);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  transition: left 220ms ease, right 220ms ease, background 160ms ease;
+}
+
+.panel-edge-toggle:hover {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(22, 71, 110, 0.98), rgba(9, 37, 67, 0.98));
+}
+
+.panel-edge-toggle:focus-visible {
+  outline: 2px solid #81d4fa;
+  outline-offset: 2px;
+}
+
+.panel-edge-toggle span {
+  font-size: 25px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+
+.left-panel-toggle {
+  left: 280px;
+  border-left: 0;
+  border-radius: 0 9px 9px 0;
+}
+
+.left-panel-toggle.collapsed {
+  left: 0;
+}
+
+.right-panel-toggle {
+  right: 436px;
+  border-right: 0;
+  border-radius: 9px 0 0 9px;
+}
+
+.right-panel-toggle.collapsed {
+  right: 0;
+}
+
+@media (max-width: 980px) {
+  .right-panel-toggle { right: 380px; }
+  .right-panel-toggle.collapsed { right: 0; }
 }
 
 .panel-section {

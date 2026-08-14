@@ -119,8 +119,8 @@
             <label>
               <span>接驳节点</span>
               <select v-model="selectedNodeId">
-                <option disabled value="">请选择可用节点</option>
-                <option v-for="node in availableNodes" :key="node.id" :value="node.id">
+                <option disabled value="">{{ nodeSelectionPlaceholder }}</option>
+                <option v-for="node in assignableNodes" :key="node.id" :value="node.id">
                   {{ node.name }}
                 </option>
               </select>
@@ -201,6 +201,21 @@ const selectedNodeId = ref('')
 const activeTaskCount = computed(() => workspace.value.tasks.filter((item) => ACTIVE_STATUSES.has(item.task.status)).length)
 const availableDrones = computed(() => workspace.value.drones.filter((drone) => drone.status === DRONE_STATUS.IDLE))
 const availableNodes = computed(() => workspace.value.nodes.filter((node) => node.availability === NODE_AVAILABILITY.AVAILABLE))
+const plannedReceivingNodeId = computed(() => getPlannedReceivingNodeId(selectedItem.value))
+const assignableNodes = computed(() => {
+  const plannedNodeId = plannedReceivingNodeId.value
+  if (plannedNodeId != null) {
+    return availableNodes.value.filter((node) => Number(node.id) === plannedNodeId)
+  }
+
+  const candidates = orderedAvailableCandidates(selectedItem.value)
+  return candidates.length ? candidates : availableNodes.value
+})
+const nodeSelectionPlaceholder = computed(() => (
+  plannedReceivingNodeId.value != null && !assignableNodes.value.length
+    ? '航线接驳节点当前不可用'
+    : '请选择可用节点'
+))
 const availableDroneCount = computed(() => availableDrones.value.length)
 const availableNodeCount = computed(() => availableNodes.value.length)
 const filteredTasks = computed(() => filter.value === 'active'
@@ -229,10 +244,27 @@ watch(selectedItem, (item) => {
   if (item?.task.status === TASK_STATUS.APPROVED) setDefaultResources(item)
 }, { immediate: true })
 
+function getPlannedReceivingNodeId(item) {
+  const accessPoint = item?.route?.planning_context?.access_points?.receiving
+  const nodeId = Number(accessPoint?.node_id ?? accessPoint?.id)
+  return Number.isInteger(nodeId) && nodeId > 0 ? nodeId : null
+}
+
+function orderedAvailableCandidates(item) {
+  const nodesById = new Map(availableNodes.value.map((node) => [Number(node.id), node]))
+  return (item?.task?.candidate_node_ids || [])
+    .map((nodeId) => nodesById.get(Number(nodeId)))
+    .filter(Boolean)
+}
+
 function setDefaultResources(item) {
-  const candidateNode = availableNodes.value.find((node) => item.task.candidate_node_ids?.includes(node.id))
+  const plannedNodeId = getPlannedReceivingNodeId(item)
+  const plannedNode = plannedNodeId == null
+    ? null
+    : availableNodes.value.find((node) => Number(node.id) === plannedNodeId)
+  const candidateNode = plannedNodeId == null ? orderedAvailableCandidates(item)[0] : null
   selectedDroneId.value = availableDrones.value[0]?.id || ''
-  selectedNodeId.value = candidateNode?.id || availableNodes.value[0]?.id || ''
+  selectedNodeId.value = plannedNode?.id || candidateNode?.id || (plannedNodeId == null ? availableNodes.value[0]?.id : '') || ''
 }
 
 function selectTask(taskId) {
@@ -345,6 +377,14 @@ onMounted(loadWorkspace)
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(12px);
   z-index: 998;
+  transition: transform 220ms ease, opacity 180ms ease;
+  will-change: transform;
+}
+
+.operator-task-panel.role-panel-collapsed {
+  transform: translateX(calc(100% + 32px));
+  opacity: 0;
+  pointer-events: none;
 }
 
 .panel-kicker { color: #64b5f6; font-size: 10px; letter-spacing: 0.16em; }

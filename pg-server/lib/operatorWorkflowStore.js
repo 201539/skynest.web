@@ -21,6 +21,12 @@ function conflict(message, code) {
   return error
 }
 
+function plannedReceivingNodeId(route) {
+  const accessPoint = route?.planning_context?.access_points?.receiving
+  const nodeId = Number(accessPoint?.node_id ?? accessPoint?.id)
+  return Number.isInteger(nodeId) && nodeId > 0 ? nodeId : null
+}
+
 function frontendTaskStatus(databaseStatus) {
   return {
     planning: 'approved',
@@ -153,12 +159,16 @@ async function dispatchTask(taskId, assignment = {}, options = {}) {
       throw conflict('只有已批准且完成航线规划的任务可以派发', 'TASK_NOT_DISPATCHABLE')
     }
     const routeResult = await client.query(
-      `SELECT route_id FROM runtime.routes
+      `SELECT route_id, planning_context FROM runtime.routes
        WHERE task_id = $1 AND is_current
        ORDER BY created_at DESC, route_id DESC LIMIT 1`,
       [id]
     )
     if (!routeResult.rowCount) throw conflict('任务尚未生成可执行航线', 'TASK_ROUTE_MISSING')
+    const routeNodeId = plannedReceivingNodeId(routeResult.rows[0])
+    if (routeNodeId != null && nodeId !== routeNodeId) {
+      throw conflict(`所选接驳节点与当前航线终点不一致，必须使用节点 ${routeNodeId}`, 'NODE_ROUTE_MISMATCH')
+    }
 
     const droneResult = await client.query(
       'SELECT * FROM runtime.drones WHERE drone_id = $1 FOR UPDATE',

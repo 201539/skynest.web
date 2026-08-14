@@ -47,7 +47,7 @@ async function main() {
     await client.query('BEGIN')
 
     const submitted = await taskWorkflowStore.createTask(sampleTask(), { client })
-    await taskWorkflowStore.reviewTask(submitted.id, {
+    const approved = await taskWorkflowStore.reviewTask(submitted.id, {
       decision: 'approved',
       reason: '审计链路自测批准',
       reviewer: { name: '自动审核员', department: '项目组' },
@@ -59,9 +59,10 @@ async function main() {
       (item.battery_percent == null || item.battery_percent >= 20) &&
       (item.payload_kg == null || item.payload_kg >= submitted.weight_kg)
     ))
-    const node = operatorWorkspace.nodes.find((item) => item.availability === 'available')
+    const routeNodeId = Number(approved.route?.planning_context?.access_points?.receiving?.node_id)
+    const node = operatorWorkspace.nodes.find((item) => item.availability === 'available' && item.id === routeNodeId)
     assert.ok(drone, 'verification needs one available drone')
-    assert.ok(node, 'verification needs one available transfer node')
+    assert.ok(node, 'verification needs the planned receiving node to be available')
 
     await operatorWorkflowStore.dispatchTask(submitted.id, {
       drone_id: drone.id,

@@ -840,6 +840,14 @@ onMounted(() => Promise.all([loadStudentTasks(), loadBuildings()]))
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(12px);
   z-index: 998;
+  transition: transform 220ms ease, opacity 180ms ease;
+  will-change: transform;
+}
+
+.task-submit-panel.role-panel-collapsed {
+  transform: translateX(calc(100% + 32px));
+  opacity: 0;
+  pointer-events: none;
 }
 
 .panel-kicker {
