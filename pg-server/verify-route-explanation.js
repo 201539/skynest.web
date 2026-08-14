@@ -48,6 +48,7 @@ async function main() {
   assert.equal(explanation.evidence.risk_change_percent, -28)
   assert.equal(explanation.confidence.confirmation_required, false)
   assert.equal(explanation.guardrails.route_reason_inference_used, false)
+  assert.equal(routeExplanationService.riskFactorLabel('weather_default_configured'), '默认天气参数')
 
   const initialExplanation = routeExplanationService.explainRoute(sampleRoute({
     route_type: 'initial',

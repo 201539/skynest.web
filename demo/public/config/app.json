@@ -48,7 +48,13 @@
     "layerTolerance": 20,
     "minBoxHeight": 6,
     "dynamicRefreshSeconds": 30,
-    "weatherFreshnessMinutes": 30
+    "weatherFreshnessMinutes": 30,
+    "defaultWeather": {
+      "enabled": true,
+      "windSpeed": 3,
+      "precipitation": 0,
+      "visibility": 5000
+    }
   },
   "defaultLayers": {
     "terrain": true,

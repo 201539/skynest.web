@@ -68,7 +68,12 @@ function runPureModelChecks() {
     wind_speed: 2,
     visibility: 5000,
   })
-  const missingWeather = dynamicCost.calculateCellCost(safeCell, { population_value: 100 })
+  const configuredWeather = dynamicCost.calculateCellCost(safeCell, { population_value: 100 })
+  const missingWeather = dynamicCost.calculateCellCost(
+    safeCell,
+    { population_value: 100 },
+    { thresholds: { useDefaultWeather: 0 } }
+  )
   const staleSevereWind = dynamicCost.calculateCellCost(safeCell, {
     weather_recorded_at: '2026-08-11T02:00:00.000Z',
     weather_age_seconds: 7200,
@@ -94,6 +99,15 @@ function runPureModelChecks() {
   assert.ok(accessClosed.hard_constraints.includes('periodic_access_closed'))
   assert.equal(freshWeather.layer_data_status.weather, 'realtime')
   assert.equal(staleWeather.layer_data_status.weather, 'stale')
+  assert.equal(configuredWeather.layer_data_status.weather, 'configured_default')
+  assert.equal(configuredWeather.inputs.weather_source, 'configured_default')
+  assert.equal(configuredWeather.inputs.wind_speed, 3)
+  assert.equal(configuredWeather.inputs.precipitation, 0)
+  assert.equal(configuredWeather.inputs.visibility, 5000)
+  assert.equal(configuredWeather.breakdown.weather.normalized_risk, 0.15)
+  assert.equal(configuredWeather.breakdown.weather.contribution, 0.03)
+  assert.ok(configuredWeather.risk_factors.includes('weather_default_configured'))
+  assert.equal(configuredWeather.passable, true)
   assert.equal(missingWeather.layer_data_status.weather, 'not_available')
   assert.ok(staleWeather.traversal_cost > freshWeather.traversal_cost)
   assert.ok(missingWeather.risk_factors.includes('weather_data_missing'))

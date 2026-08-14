@@ -137,7 +137,7 @@
               <span>{{ formatDuration(selectedItem.route.estimated_duration_seconds) }}</span>
             </div>
             <p v-if="selectedItem.route.main_risk_factors?.length">
-              主要风险：{{ selectedItem.route.main_risk_factors.join('、') }}
+              主要风险：{{ selectedItem.route.main_risk_factors.map(riskFactorLabel).join('、') }}
             </p>
             <p v-if="selectedItem.route.avoided_zones?.length">
               已绕开：{{ selectedItem.route.avoided_zones.join('、') }}
@@ -477,6 +477,17 @@ function statusLabel(status) {
 
 function priorityLabel(priority) {
   return { normal: '普通', urgent: '紧急', emergency: '应急' }[priority] || priority || '普通'
+}
+
+function riskFactorLabel(value) {
+  return ({
+    static_environment: '静态环境', population_density: '人流密度', weather: '天气条件',
+    construction: '施工', event: '临时事件', data_coverage_gap: '数据覆盖不足',
+    energy: '能源', no_fly_zone: '禁飞区', class_period: '上课时段',
+    consumption_peak: '食堂营业高峰', access_closed: '场馆关闭',
+    weather_default_configured: '默认天气参数',
+    weather_data_stale: '天气数据过期', weather_data_missing: '天气数据缺失',
+  })[value] || value
 }
 
 function vehicleLabel(vehicleClass) {

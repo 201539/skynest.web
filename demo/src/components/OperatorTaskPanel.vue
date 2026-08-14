@@ -98,7 +98,7 @@
               <span>{{ formatDistance(selectedItem.route.total_length_meters) }}</span>
               <span>{{ formatDuration(selectedItem.route.estimated_duration_seconds) }}</span>
             </div>
-            <p>风险提示：{{ selectedItem.route.main_risk_factors?.join('、') || '暂无明显风险' }}</p>
+            <p>风险提示：{{ selectedItem.route.main_risk_factors?.map(riskFactorLabel).join('、') || '暂无明显风险' }}</p>
             <RouteExplanationCard :explanation="selectedItem.route.explanation" />
           </template>
           <p v-else class="muted">航点链暂未生成，请联系路径规划模块。</p>
@@ -257,6 +257,17 @@ function droneStatusLabel(status) {
 
 function nodeStatusLabel(status) {
   return { available: '可用', reserved: '已预留', occupied: '占用中', maintenance: '维护中', offline: '离线' }[status] || status
+}
+
+function riskFactorLabel(value) {
+  return ({
+    static_environment: '静态环境', population_density: '人流密度', weather: '天气条件',
+    construction: '施工', event: '临时事件', data_coverage_gap: '数据覆盖不足',
+    energy: '能源', no_fly_zone: '禁飞区', class_period: '上课时段',
+    consumption_peak: '食堂营业高峰', access_closed: '场馆关闭',
+    weather_default_configured: '默认天气参数',
+    weather_data_stale: '天气数据过期', weather_data_missing: '天气数据缺失',
+  })[value] || value
 }
 
 function formatDateTime(value) {

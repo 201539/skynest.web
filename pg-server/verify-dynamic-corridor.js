@@ -42,9 +42,16 @@ async function main() {
       result.data.length
     )
     assert.ok(result.data.some((cell) => cell.inputs.population_source === 'periodic'))
-    assert.ok(result.data.every((cell) => ['realtime', 'stale', 'not_available'].includes(
+    assert.ok(result.data.every((cell) => ['realtime', 'configured_default', 'stale', 'not_available'].includes(
       cell.freshness?.weather?.status
     )))
+    assert.ok(result.data
+      .filter((cell) => cell.freshness?.weather?.status === 'configured_default')
+      .every((cell) => (
+        cell.inputs.wind_speed === 3
+        && cell.inputs.precipitation === 0
+        && cell.inputs.visibility === 5000
+      )))
 
     console.log(JSON.stringify({
       ok: true,

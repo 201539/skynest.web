@@ -2,11 +2,17 @@ const RISK_FACTOR_LABELS = Object.freeze({
   static_environment: '静态环境风险',
   population_density: '人流密度',
   weather: '天气条件',
+  weather_default_configured: '默认天气参数',
+  weather_data_stale: '天气数据过期',
+  weather_data_missing: '天气数据缺失',
   construction: '施工影响',
   event: '临时活动',
   data_coverage_gap: '动态数据覆盖不足',
   energy: '飞行能耗',
   no_fly_zone: '禁飞区约束',
+  class_period: '上课时段',
+  consumption_peak: '食堂营业高峰',
+  access_closed: '场馆关闭',
 })
 
 function hasOwn(value, key) {

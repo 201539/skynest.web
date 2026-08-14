@@ -329,7 +329,7 @@
         <span>平均 Cost <strong>{{ Number(gridDynamicSummary.average_traversal_cost || 0).toFixed(2) }}</strong></span>
       </div>
       <p v-if="gridDynamicSummary?.weather_data && gridDisplayMode === 'route-dynamic'" class="hint">
-        天气数据：实时 {{ gridDynamicSummary.weather_data.realtime || 0 }} · 过期 {{ gridDynamicSummary.weather_data.stale || 0 }} · 缺失 {{ gridDynamicSummary.weather_data.not_available || 0 }}
+        天气参数：实时 {{ gridDynamicSummary.weather_data.realtime || 0 }} · 默认 {{ gridDynamicSummary.weather_data.configured_default || 0 }} · 过期 {{ gridDynamicSummary.weather_data.stale || 0 }} · 缺失 {{ gridDynamicSummary.weather_data.not_available || 0 }}
       </p>
       <div v-if="gridSelectedCell" class="grid-detail-card">
         <div class="grid-detail-title">
@@ -343,7 +343,7 @@
         </div>
         <p>综合适航分：<strong>{{ formatGridScore(gridSelectedCell.suitability_score) }}</strong> · Cost {{ gridSelectedCell.traversal_cost ?? '阻断' }}</p>
         <p v-if="gridSelectedCell.risk_factors?.length">主要风险：{{ gridSelectedCell.risk_factors.map(riskFactorLabel).join('、') }}</p>
-        <p>数据状态：周期层{{ formatPeriodicSources(gridSelectedCell) }}；实时天气{{ formatWeatherStatus(gridSelectedCell) }}</p>
+        <p>数据状态：周期层{{ formatPeriodicSources(gridSelectedCell) }}；天气{{ formatWeatherStatus(gridSelectedCell) }}</p>
         <p v-if="formatPeriodicMatches(gridSelectedCell)">周期命中：{{ formatPeriodicMatches(gridSelectedCell) }}</p>
         <p v-if="gridSelectedCell.hard_constraints?.length" class="grid-blocked">硬约束：{{ gridSelectedCell.hard_constraints.map(hardConstraintLabel).join('、') }}</p>
       </div>
@@ -2302,6 +2302,10 @@ function formatPeriodicMatches(cell) {
 
 function formatWeatherStatus(cell) {
   const weather = cell?.freshness?.weather || {}
+  if (weather.status === 'configured_default') {
+    const inputs = cell?.inputs || {}
+    return `默认参数（风速 ${inputs.wind_speed ?? 3}m/s，降雨 ${inputs.precipitation ?? 0}mm/h，能见度 ${inputs.visibility ?? 5000}m）`
+  }
   if (weather.status === 'realtime') {
     return weather.age_minutes == null ? '已匹配' : `已匹配（${Number(weather.age_minutes).toFixed(1)}分钟前）`
   }
@@ -2319,6 +2323,7 @@ function riskFactorLabel(value) {
     construction: '施工', event: '临时事件', data_coverage_gap: '数据缺口',
     energy: '能源', no_fly_zone: '禁飞区', class_period: '上课时段',
     consumption_peak: '食堂营业高峰', access_closed: '场馆关闭',
+    weather_default_configured: '默认天气参数',
     weather_data_stale: '天气数据过期', weather_data_missing: '天气数据缺失',
   })[value] || value
 }
@@ -2440,6 +2445,10 @@ async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
       thresholds: {
         minSuitability: appConfig.routePlan?.minScore ?? 0.25,
         weatherFreshnessMinutes: appConfig.grid?.weatherFreshnessMinutes ?? 30,
+        useDefaultWeather: appConfig.grid?.defaultWeather?.enabled === false ? 0 : 1,
+        defaultWindSpeed: appConfig.grid?.defaultWeather?.windSpeed ?? 3,
+        defaultPrecipitation: appConfig.grid?.defaultWeather?.precipitation ?? 0,
+        defaultVisibility: appConfig.grid?.defaultWeather?.visibility ?? 5000,
       },
     }, { signal: controller.signal })
     const data = filterGridsByScore(result.data || [])
