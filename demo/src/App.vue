@@ -3,7 +3,12 @@
 
   <header class="platform-header">
     <div class="header-title">{{ appConfig.title || '仙林校区无人机适航评估平台' }}</div>
-    <button type="button" class="portal-home-button" @click="returnToRolePortal">角色首页</button>
+    <div v-if="currentUser" class="session-badge">
+      <span>{{ currentUser.role_label }}</span>
+      <strong>{{ currentUser.name }}</strong>
+      <button type="button" @click="handleLogout">退出</button>
+    </div>
+    <button v-if="legacyToolsEnabled" type="button" class="portal-home-button" @click="returnToRolePortal">旧角色入口</button>
     <div class="header-status">
       <span :class="['status-dot', dbConnected ? 'online' : 'offline']"></span>
       <span v-if="dbConnected">数据库已连接 · {{ gridTotal.toLocaleString() }} 条格网</span>
@@ -39,7 +44,7 @@
   />
 
   <aside class="side-panel">
-    <section class="panel-section admin-task-section">
+    <section v-if="legacyToolsEnabled && activeRole === ROLE.SCHOOL" class="panel-section admin-task-section">
       <div class="admin-title-row">
         <h3>校方任务中心</h3>
         <button type="button" class="admin-refresh-btn" @click="loadAdminTasks(true)" :disabled="adminLoading">刷新</button>
@@ -838,6 +843,31 @@ const canPlanRoute = computed(() =>
   )
 )
 const officialBuildingsLoaded = computed(() => placesSource.value === 'v3-buildings' && campusPlaces.value.length === 83)
+const selectedAdminTask = computed(() => {
+  if (adminTaskDetail.value?.id === selectedAdminTaskId.value) return adminTaskDetail.value
+  return adminTasks.value.find((task) => task.id === selectedAdminTaskId.value) || null
+})
+const adminTaskCounts = computed(() => ({
+  pending: adminTasks.value.filter((task) => task.status === 'PENDING_APPROVAL').length,
+  flying: adminTasks.value.filter((task) => task.status === 'IN_FLIGHT').length,
+  completed: adminTasks.value.filter((task) => task.status === 'COMPLETED').length,
+}))
+const canAdvanceAdminTask = computed(() => [
+  TASK_STATUS_PROVIDER_ACCEPTED,
+  'READY_FOR_TAKEOFF',
+  'IN_FLIGHT',
+].includes(selectedAdminTask.value?.status))
+const canSimulateAdminException = computed(() => [
+  TASK_STATUS_PROVIDER_ACCEPTED,
+  'READY_FOR_TAKEOFF',
+  'IN_FLIGHT',
+].includes(selectedAdminTask.value?.status))
+const agentFormComplete = computed(() => Boolean(
+  agentForm.origin.trim() &&
+  agentForm.destination.trim() &&
+  agentForm.itemCategory &&
+  Number(agentForm.weightKg) > 0
+))
 const officialNodeSummary = computed(() => officialFixedNodes.value.reduce((summary, node) => {
   if (node.node_code === 'hub') summary.l1 += 1
   else if (/^[a-e]$/.test(node.node_code)) summary.l2 += 1
@@ -2002,7 +2032,7 @@ function showStatus(msg, ms = 3000) {
 }
 
 function returnToRolePortal() {
-  window.location.assign('/')
+  window.location.assign('/?portal=1')
 }
 
 async function fetchJson(url, options = {}) {
@@ -3672,6 +3702,14 @@ function handleGlobalKeyDown(event) {
 }
 
 onMounted(async () => {
+  globalThis.addEventListener('skynest-auth-expired', handleAuthExpired)
+  const session = await demoApi.restoreSession()
+  if (session) {
+    currentUser.value = session.user
+    activeRole.value = session.user.role
+  }
+  authReady.value = true
+
   await loadAppConfig()
   Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_TOKEN || ''
   // 优先加载下拉框数据，避免被 Cesium 初始化阻塞
@@ -3680,7 +3718,7 @@ onMounted(async () => {
     loadRoutesFromApi(),
     currentUser.value ? loadCampusPlaces() : Promise.resolve(false),
     checkDatabase(),
-    loadAdminTasks(),
+    legacyToolsEnabled.value ? loadAdminTasks() : Promise.resolve(),
   ])
 
   viewer = new Cesium.Viewer('cesiumContainer', {
@@ -3724,7 +3762,9 @@ onMounted(async () => {
   if (layers.grid) await reloadGridsInView()
   await checkDatabase()
   startDbWatch()
-  adminTaskTimer = setInterval(() => { loadAdminTasks() }, 5000)
+  if (legacyToolsEnabled.value) {
+    adminTaskTimer = setInterval(() => { loadAdminTasks() }, 5000)
+  }
   document.addEventListener('keydown', handleGlobalKeyDown)
   document.addEventListener('visibilitychange', handleDocumentVisibilityChange)
 })

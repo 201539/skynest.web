@@ -46,6 +46,40 @@ const ITEM_CATEGORY_RULES = [
   },
 ]
 
+const ITEM_CATEGORIES = Object.freeze([
+  '餐食饮品',
+  '文件图书',
+  '日用小件',
+  '实验材料',
+  '医疗样本',
+  '生物材料',
+  '危险化学品',
+  '高价值设备',
+  '其他/无法识别',
+])
+
+const REQUIRED_FIELDS = Object.freeze(['origin', 'destination', 'item_category', 'weight_kg', 'deadline'])
+
+const CATEGORY_TO_V3 = Object.freeze({
+  experimental_material: '实验材料',
+  document: '文件图书',
+  book: '文件图书',
+  medicine: '医疗样本',
+  meal: '餐食饮品',
+  medical_sample: '医疗样本',
+  biological_material: '生物材料',
+  hazardous_chemical: '危险化学品',
+  flammable_explosive: '危险化学品',
+})
+
+const REQUIREMENT_TO_V3 = Object.freeze({
+  shockproof: '防震',
+  cold_chain: '冷链',
+  temperature_controlled: '恒温',
+  fragile: '易碎',
+  waterproof: '防水',
+})
+
 const SPECIAL_REQUIREMENT_RULES = [
   { keyword: '防震', value: 'shockproof' },
   { keyword: '冷链', value: 'cold_chain' },
@@ -209,6 +243,26 @@ function parseTaskMock(rawRequest, now = new Date()) {
   return result
 }
 
+function parseNaturalLanguageTask(inputText, options = {}) {
+  const parsed = parseTaskMock(inputText, options.now instanceof Date ? options.now : new Date())
+  const task = {
+    input_text: parsed.raw_request,
+    origin: parsed.origin_text || '',
+    destination: parsed.destination_text || '',
+    item_category: parsed.item_category ? CATEGORY_TO_V3[parsed.item_category] || '其他/无法识别' : null,
+    weight_kg: parsed.weight_kg,
+    deadline: parsed.deadline,
+    priority: parsed.priority === 'high' ? 'urgent' : 'normal',
+    special_requirements: parsed.special_requirements.map((item) => REQUIREMENT_TO_V3[item] || item),
+  }
+  task.missing_fields = REQUIRED_FIELDS.filter((field) => task[field] == null || task[field] === '')
+  return task
+}
+
 module.exports = {
+  ITEM_CATEGORIES,
+  REQUIRED_FIELDS,
+  CATEGORY_TO_V3,
   parseTaskMock,
+  parseNaturalLanguageTask,
 }

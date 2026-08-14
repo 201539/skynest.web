@@ -6,6 +6,15 @@ const path = require('path')
 const fs = require('fs')
 const { Pool } = require('pg')
 const { computeSearchBbox, planRoute } = require('./lib/routePlanner')
+const { createV3Router } = require('./routes/v3')
+const v3Database = require('./lib/v3Database')
+const routeStore = require('./lib/routeStore')
+const dynamicReplanService = require('./lib/dynamicReplanService')
+const restrictionStore = require('./lib/restrictionStore')
+const taskWorkflowStore = require('./lib/taskWorkflowStore')
+const auditStore = require('./lib/auditStore')
+const authService = require('./lib/authService')
+const { getLegacyDatabaseConfig } = require('./lib/databaseConfig')
 const { planTaskRoute } = require('./demo/routeOrchestrator')
 const mockProvider = require('./demo/mockProvider')
 const { parseTaskMock } = require('./agent/taskParser')
@@ -28,15 +37,13 @@ const {
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '2mb' }))
+app.use('/api/v3', createV3Router())
 app.use('/student', express.static(path.join(__dirname, 'public', 'student')))
 app.use('/enterprise', express.static(path.join(__dirname, 'public', 'enterprise')))
 
-const pool = new Pool({
-  host: process.env.PG_HOST || 'localhost',
-  port: parseInt(process.env.PG_PORT || '5432', 10),
-  user: process.env.PG_USER || 'postgres',
-  password: process.env.PG_PASSWORD || '',
-  database: process.env.PG_DATABASE || 'nanjing_uni_grid_score',
+const requireSchool = [authService.authenticate, authService.requireRoles(authService.ROLES.SCHOOL)]
+
+const pool = new Pool(getLegacyDatabaseConfig({
   max: 10,
 }))
 
@@ -429,7 +436,7 @@ app.get('/api/places', (_req, res) => {
 })
 
 
-app.put('/api/places', handleSavePlaces)
+app.put('/api/places', ...requireSchool, handleSavePlaces)
 // AI Agent：将用户自然语言解析为结构化配送任务
 app.post('/api/agent/parse-task', (req, res) => {
   const { message } = req.body || {}
@@ -874,7 +881,7 @@ app.post('/api/admin/demo/tasks/:id/reject', async (req, res) => {
   }
 })
 
-app.post('/api/places/save', handleSavePlaces)
+app.post('/api/places/save', ...requireSchool, handleSavePlaces)
 
 function handleSavePlaces(req, res) {
   const { places } = req.body || {}

@@ -1,4 +1,4 @@
-const { ITEM_CATEGORIES, REQUIRED_FIELDS, parseNaturalLanguageTask } = require('./taskParser')
+const { ITEM_CATEGORIES, REQUIRED_FIELDS, parseTaskMock, parseNaturalLanguageTask } = require('./taskParser')
 const { matchLocation } = require('./locationMatcher')
 const { recommendVehicle } = require('./vehicleRules')
 
@@ -171,8 +171,109 @@ function processNaturalLanguage(inputText, context = {}, now = new Date()) {
   return enrichTask(task, context)
 }
 
+const LEGACY_CATEGORIES = new Set([
+  'experimental_material', 'document', 'book', 'medicine', 'meal',
+  'medical_sample', 'biological_material', 'hazardous_chemical', 'flammable_explosive',
+])
+
+const LEGACY_REQUIREMENTS = new Set([
+  'shockproof', 'cold_chain', 'temperature_controlled', 'fragile', 'waterproof',
+])
+
+function normalizeLegacyDeadline(value) {
+  const text = String(value || '').trim()
+  if (!text) return null
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(text)) return text
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) return `${text}:00+08:00`
+  return null
+}
+
+function normalizeLegacyStructuredTask(input = {}) {
+  const rawWeight = input.weight_kg === '' || input.weight_kg == null ? null : Number(input.weight_kg)
+  const task = {
+    raw_request: String(input.raw_request || '').trim(),
+    origin_text: String(input.origin_text || '').trim() || null,
+    destination_text: String(input.destination_text || '').trim() || null,
+    origin_node_id: null,
+    destination_node_id: null,
+    item_category: LEGACY_CATEGORIES.has(input.item_category) ? input.item_category : null,
+    weight_kg: Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : null,
+    deadline: normalizeLegacyDeadline(input.deadline),
+    priority: input.priority === 'high' ? 'high' : 'normal',
+    special_requirements: Array.isArray(input.special_requirements)
+      ? [...new Set(input.special_requirements.filter((item) => LEGACY_REQUIREMENTS.has(item)))]
+      : [],
+    recommended_vehicle_class: null,
+    candidate_node_ids: [],
+    needs_manual_review: false,
+    missing_fields: [],
+    parse_confidence: 1,
+    parse_status: 'structured',
+  }
+  for (const [field, missingField] of [
+    ['origin_text', 'origin'], ['destination_text', 'destination'], ['item_category', 'item_category'],
+    ['weight_kg', 'weight_kg'], ['deadline', 'deadline'],
+  ]) {
+    if (task[field] == null) task.missing_fields.push(missingField)
+  }
+  if (task.missing_fields.length) {
+    task.parse_status = 'needs_clarification'
+    task.parse_confidence = 0
+  }
+  return task
+}
+
+function processLegacyTaskDraft(task, places = []) {
+  const originMatch = matchLocation(task.origin_text, places)
+  const destinationMatch = matchLocation(task.destination_text, places)
+  const vehicleResult = recommendVehicle(task)
+  const legacyNodeId = (node) => {
+    if (!node) return null
+    if (node.node_id != null) return node.node_id
+    const index = places.indexOf(node)
+    return index >= 0 ? `place:${index}` : null
+  }
+  task.origin_node_id = legacyNodeId(originMatch.selected_node)
+  task.destination_node_id = legacyNodeId(destinationMatch.selected_node)
+  task.recommended_vehicle_class = vehicleResult.vehicle?.code || null
+  task.candidate_node_ids = [...originMatch.candidates, ...destinationMatch.candidates]
+    .map(legacyNodeId)
+    .filter(Boolean)
+  task.needs_manual_review = task.needs_manual_review || vehicleResult.needs_manual_review
+
+  const status = task.missing_fields.length
+    ? 'needs_clarification'
+    : originMatch.status !== 'matched' || destinationMatch.status !== 'matched'
+      ? 'needs_location_confirmation'
+      : task.needs_manual_review
+        ? 'needs_manual_review'
+        : 'ready_for_algorithm'
+  const questions = task.missing_fields.map((field) => FIELD_QUESTIONS[field]).filter(Boolean)
+  if (task.origin_text && originMatch.status !== 'matched') questions.push(`请确认起点“${task.origin_text}”。`)
+  if (task.destination_text && destinationMatch.status !== 'matched') questions.push(`请确认终点“${task.destination_text}”。`)
+
+  return {
+    task_draft: task,
+    workflow_status: status,
+    can_submit_to_algorithm: status === 'ready_for_algorithm',
+    location_matches: { origin: originMatch, destination: destinationMatch },
+    vehicle_recommendation: vehicleResult,
+    clarifying_questions: questions.slice(0, 3),
+    explanation: status === 'ready_for_algorithm'
+      ? `已匹配起终点并推荐${vehicleResult.vehicle?.label || '适用机型'}，任务可提交路径算法。`
+      : '任务仍需补充信息、确认地点或进行人工审核。',
+  }
+}
+
+function processTask(message, places, now = new Date()) {
+  return processLegacyTaskDraft(parseTaskMock(message, now), places)
+}
+
 function processStructuredTask(input, context = {}) {
+  if (Array.isArray(context) || input?.origin_text != null || input?.destination_text != null) {
+    return processLegacyTaskDraft(normalizeLegacyStructuredTask(input), Array.isArray(context) ? context : [])
+  }
   return enrichTask(normalizeStructuredTask(input), context)
 }
 
-module.exports = { normalizeStructuredTask, processNaturalLanguage, processStructuredTask }
+module.exports = { normalizeStructuredTask, processTask, processNaturalLanguage, processStructuredTask }

@@ -1,6 +1,6 @@
 # SkyNest 仙林校区无人机低空配送平台
 
-基于 **Vue 3 + Cesium 1.95 + Express + PostgreSQL 18** 的校园低空配送服务平台，包含学生任务端、校方三维管理端、AI Agent 结构化编排、企业接口沙箱、适航格网、热力图时序与航线规划。
+基于 **Vue 3 + Cesium 1.95 + Express + PostgreSQL 18** 的校园低空配送服务平台，包含师生任务端、校方三维管理端、运营履约端、AI Agent 结构化编排、适航格网、热力图时序与航线规划，并保留可选的旧企业接口沙箱用于兼容测试。
 
 当前版本适合本地比赛演示。核心业务闭环和三类角色权限已经完成；正式上线前仍需替换生产账号并完成生产部署。
 
@@ -204,7 +204,7 @@ npm run dev
 - 页面：<http://localhost:5173/>
 - 后端：<http://localhost:3001/api/v3/health>
 
-角色首页：`http://localhost:5173/`；学生端：`/student/`；企业端：`/enterprise/`；校方三维管理端：`/?role=school`。
+正式入口统一为 `http://localhost:5173/`，登录后系统会按师生、校方或运营账号自动进入对应工作台。远程分支带来的旧角色首页可通过 `/?portal=1` 单独访问；`/student/` 与 `/enterprise/` 仅作为兼容演示页保留，不属于正式三端入口。
 
 > ⚠️ 必须通过 Vite 开发服务器访问，**不要**用 `file://` 直接打开 HTML，否则 API 代理与静态资源会失效。
 
@@ -224,14 +224,14 @@ npm run dev
 
 `demo/public/config/app.json` 默认关闭旧版独立规划器、白模坐标标定、预设航线、GeoJSON 维护层、账号快捷填充和离线模拟格网。正式页面只展示真实三端业务、V3 正式建筑/节点、任务航线与真实数据库格网；数据库不可用时会明确报错，不会用模拟数据伪装成功。
 
-如需维护旧数据，可在本地临时把 `ui.showLegacyTools` 和 `ui.showQuickLogin` 设为 `true`，并按需启用 `grid.useDemoWhenOffline`。这些开关不应在比赛或生产页面开启。
+如需维护旧数据，可在本地临时把 `ui.showLegacyTools` 和 `ui.showQuickLogin` 设为 `true`，并按需启用 `grid.useDemoWhenOffline`。旧角色入口位于 `/?portal=1`。这些开关和兼容入口不应在比赛或生产页面开启。
 
 ## 三类角色操作流程
 
 ```
-打开 localhost:5173 并选择学生端、企业端或校方端
+打开 localhost:5173 并使用师生、校方或运营账号登录
     ↓
-学生提交需求 → 校方审核 → 企业沙箱履约 → 学生取件
+师生提交需求 → 校方审核并生成航线 → 运营端派发与运输 → 完成交付
     ↓（进入校方端）
 确认顶栏「已连接」
     ↓
