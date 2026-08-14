@@ -20,14 +20,12 @@
   <TaskSubmitPanel
     v-if="activeRole === ROLE.STUDENT"
     :current-user="currentUser"
-    @submitted="handleTaskSubmitted"
     @notify="showStatus"
     @view-route="handleViewTaskRoute"
   />
 
   <SchoolReviewPanel
     v-else-if="activeRole === ROLE.SCHOOL"
-    @reviewed="handleTaskReviewed"
     @notify="showStatus"
     @view-route="handleViewTaskRoute"
     @safety-updated="handleSafetyUpdated"
@@ -36,16 +34,8 @@
 
   <OperatorTaskPanel
     v-else-if="activeRole === ROLE.OPERATOR"
-    @updated="handleOperatorTaskUpdated"
     @notify="showStatus"
     @view-route="handleViewTaskRoute"
-  />
-
-  <RoleOverviewPanel
-    v-else-if="activeRole"
-    :role="activeRole"
-    :overview="roleOverview"
-    :loading="roleOverviewLoading"
   />
 
   <aside class="side-panel">
@@ -109,8 +99,8 @@
       <h3>图层控制</h3>
       <label class="layer-item"><input type="checkbox" v-model="layers.terrain" @change="toggleTerrain" /> 本地地形</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.tileset" @change="toggleTileset" /> 3D Tiles 实景</label>
-      <label class="layer-item"><input type="checkbox" v-model="layers.fallbackModel" @change="toggleFallbackModel" /> 简易校园模型</label>
-      <label class="layer-item"><input type="checkbox" v-model="layers.buildings" @change="toggleBuildings" /> 校园建筑（GeoJSON）</label>
+      <label class="layer-item"><input type="checkbox" v-model="layers.fallbackModel" @change="toggleFallbackModel" /> 校园三维模型</label>
+      <label v-if="legacyToolsEnabled" class="layer-item"><input type="checkbox" v-model="layers.buildings" @change="toggleBuildings" /> 校园建筑（GeoJSON维护层）</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.officialBuildings" @change="toggleOfficialBuildings" /> 正式建筑点位（83）</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.fixedNodes" @change="toggleFixedNodes" /> 三级运输节点（13）</label>
       <label class="layer-item"><input type="checkbox" v-model="layers.heatmap" @change="toggleHeatmap" /> 热力图</label>
@@ -133,7 +123,7 @@
       </div>
     </section>
 
-    <section v-if="activeRole === ROLE.SCHOOL" class="panel-section">
+    <section v-if="legacyToolsEnabled && activeRole === ROLE.SCHOOL" class="panel-section">
       <h3>智能航线规划</h3>
       <label class="field-label">起点建筑</label>
       <select v-model="planStartName" class="full-width">
@@ -172,7 +162,7 @@
         <div>算法：{{ planResult.algorithm }} · 航点 {{ planResult.route?.points?.length ?? 0 }} 个</div>
         <div>航程约 {{ ((planResult.totalLengthMeters || 0) / 1000).toFixed(2) }} km</div>
         <div v-if="planResult.dynamicCost?.enabled" class="hint">
-          动态 Cost V1 · 可通行 {{ planResult.dynamicCost.summary?.passable ?? 0 }}/{{ planResult.dynamicCost.summary?.total ?? 0 }} 个采样格网
+          动态 Cost · 可通行 {{ planResult.dynamicCost.summary?.passable ?? 0 }}/{{ planResult.dynamicCost.summary?.total ?? 0 }} 个采样格网
           · 平均通行成本 {{ Number(planResult.dynamicCost.summary?.average_traversal_cost || 0).toFixed(2) }}
         </div>
         <div v-else-if="planResult.algorithm === 'A*' && !planResult.fallbackUsed" class="hint">
@@ -183,7 +173,7 @@
       </div>
     </section>
 
-    <section v-if="activeRole === ROLE.SCHOOL && !officialBuildingsLoaded" class="panel-section pick-section" :class="{ active: pickModeActive }">
+    <section v-if="legacyToolsEnabled && activeRole === ROLE.SCHOOL && !officialBuildingsLoaded" class="panel-section pick-section" :class="{ active: pickModeActive }">
       <h3>白模坐标标定</h3>
       <p class="hint">选建筑 → 开始取点 → 点击白模中心（取点后<strong>自动写入</strong>该建筑）</p>
       <label class="field-label">标定建筑</label>
@@ -231,7 +221,6 @@
         <span>L2机巢 <strong>{{ officialNodeSummary.l2 }}</strong></span>
         <span>L3接驳箱 <strong>{{ officialNodeSummary.l3 }}</strong></span>
       </div>
-      <p class="hint">白模手工标定仅作为旧数据维护工具，不会覆盖正式点位。</p>
     </section>
 
     <section v-if="selectedOfficialFeature" class="panel-section official-feature-section">
@@ -259,17 +248,17 @@
       </template>
     </section>
 
-    <section class="panel-section">
-      <h3>飞行航线</h3>
-      <select v-model="selectedRouteId" @change="onRouteSelect" class="full-width">
+    <section v-if="legacyToolsEnabled || currentRoute" class="panel-section">
+      <h3>{{ legacyToolsEnabled ? '飞行航线' : '当前任务航线' }}</h3>
+      <select v-if="legacyToolsEnabled" v-model="selectedRouteId" @change="onRouteSelect" class="full-width">
         <option value="">— 选择预设航线 —</option>
         <option v-for="r in routes" :key="r.id" :value="r.id">{{ r.name }}</option>
       </select>
       <p v-if="currentRoute" class="route-desc">{{ currentRoute.description }}</p>
       <div class="row btn-row">
-        <button type="button" @click="replayFlight">重播</button>
+        <button type="button" @click="replayFlight" :disabled="!currentRoute">重播</button>
         <button type="button" @click="flyToCampus">飞到校区</button>
-        <button v-if="activeRole === ROLE.SCHOOL" type="button" @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
+        <button v-if="legacyToolsEnabled && activeRole === ROLE.SCHOOL" type="button" @click="evaluateCurrentRoute" :disabled="evaluating">评估</button>
       </div>
       <div v-if="routeEvaluation" class="eval-box" :class="routeEvaluation.passable ? 'pass' : 'fail'">
         <div class="eval-title">航线适航评估</div>
@@ -378,7 +367,11 @@
   </div>
 
   <div v-if="!authReady" class="auth-loading">正在验证登录状态…</div>
-  <LoginPanel v-else-if="!currentUser" @authenticated="handleAuthenticated" />
+  <LoginPanel
+    v-else-if="!currentUser"
+    :show-quick-accounts="Boolean(appConfig.ui?.showQuickLogin)"
+    @authenticated="handleAuthenticated"
+  />
 </template>
 
 <script setup>
@@ -387,7 +380,6 @@ import * as Cesium from 'cesium'
 import proj4 from 'proj4'
 import OperatorTaskPanel from './components/OperatorTaskPanel.vue'
 import LoginPanel from './components/LoginPanel.vue'
-import RoleOverviewPanel from './components/RoleOverviewPanel.vue'
 import SchoolReviewPanel from './components/SchoolReviewPanel.vue'
 import TaskSubmitPanel from './components/TaskSubmitPanel.vue'
 import { ROLE } from './domain/contracts'
@@ -405,10 +397,6 @@ const API_BASE = '/api'
 const activeRole = ref('')
 const currentUser = ref(null)
 const authReady = ref(false)
-const roleOverview = ref(null)
-const roleOverviewLoading = ref(false)
-const demoApiMode = demoApi.mode
-let roleOverviewRequestVersion = 0
 
 async function handleAuthenticated(session) {
   currentUser.value = session.user
@@ -423,7 +411,6 @@ async function handleAuthenticated(session) {
     await renderOfficialMapFeatures()
     setupOfficialFeaturePickHandler()
   }
-  refreshRoleOverview()
   showStatus(`已登录：${session.user.name} · ${session.user.role_label}`, 3500)
 }
 
@@ -431,8 +418,8 @@ async function handleLogout() {
   await demoApi.logout()
   currentUser.value = null
   activeRole.value = ''
-  roleOverview.value = null
   resetDynamicGridDisplay()
+  clearSessionRouteState()
   selectedOfficialFeature.value = null
   clearOfficialAccessHighlights()
 }
@@ -440,11 +427,20 @@ async function handleLogout() {
 function handleAuthExpired() {
   currentUser.value = null
   activeRole.value = ''
-  roleOverview.value = null
   resetDynamicGridDisplay()
+  clearSessionRouteState()
   selectedOfficialFeature.value = null
   clearOfficialAccessHighlights()
   showStatus('登录状态已失效，请重新登录', 4500)
+}
+
+function clearSessionRouteState() {
+  selectedRouteId.value = ''
+  routes.value = []
+  planResult.value = null
+  routeEvaluation.value = null
+  clearFlightEntities()
+  clearReplanOriginalRoute()
 }
 
 function resetDynamicGridDisplay({ reloadStatic = false } = {}) {
@@ -462,34 +458,6 @@ function resetDynamicGridDisplay({ reloadStatic = false } = {}) {
 function authenticatedHeaders(extra = {}) {
   const token = demoApi.getCurrentSession()?.token
   return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra }
-}
-
-async function refreshRoleOverview() {
-  const requestVersion = ++roleOverviewRequestVersion
-  roleOverviewLoading.value = true
-
-  try {
-    const overview = await demoApi.getRoleOverview(activeRole.value)
-    if (requestVersion === roleOverviewRequestVersion) roleOverview.value = overview
-  } catch (error) {
-    console.error('角色工作台加载失败', error)
-    if (requestVersion === roleOverviewRequestVersion) roleOverview.value = null
-    showStatus(`角色工作台加载失败：${error.message}`, 5000)
-  } finally {
-    if (requestVersion === roleOverviewRequestVersion) roleOverviewLoading.value = false
-  }
-}
-
-async function handleTaskSubmitted() {
-  await refreshRoleOverview()
-}
-
-async function handleTaskReviewed() {
-  await refreshRoleOverview()
-}
-
-async function handleOperatorTaskUpdated() {
-  await refreshRoleOverview()
 }
 
 function normalizeTaskRoute(payload) {
@@ -564,10 +532,10 @@ function applyRouteAccessHighlights(route) {
 }
 
 function clearReplanOriginalRoute() {
-  if (replanOriginalRouteEntity && viewer) {
+  if (replanOriginalRouteEntity && viewer && !viewer.isDestroyed()) {
     viewer.entities.remove(replanOriginalRouteEntity)
-    replanOriginalRouteEntity = null
   }
+  replanOriginalRouteEntity = null
 }
 
 function showReplanOriginalRoute(route) {
@@ -657,10 +625,6 @@ function handleViewRestriction(restriction) {
   showStatus(`已定位限制区：${restriction.name}`, 3500)
 }
 
-watch(activeRole, (role) => {
-  if (role) refreshRoleOverview()
-})
-
 let viewer = null
 let heatmapLayer = null
 let tileset3d = null
@@ -694,6 +658,7 @@ let officialFeaturePickHandler = null
 let officialFeatureByEntityId = new Map()
 
 const appConfig = reactive({ title: '仙林校区无人机适航评估平台' })
+const legacyToolsEnabled = computed(() => appConfig.ui?.showLegacyTools === true)
 const csvFiles = ref([])
 const selectedFile = ref('')
 const DEFAULT_ROUTES = [
@@ -723,7 +688,7 @@ const DEFAULT_ROUTES = [
   },
 ]
 
-const routes = ref([...DEFAULT_ROUTES])
+const routes = ref([])
 const safetyRestrictions = ref([])
 const selectedRouteId = ref('')
 const loadingProgress = ref(0)
@@ -987,9 +952,10 @@ function clearPlanSearchBbox() {
 }
 
 function clearRouteWaypoints() {
-  if (!viewer) return
-  for (const entity of routeWaypointEntities) {
-    viewer.entities.remove(entity)
+  if (viewer && !viewer.isDestroyed()) {
+    for (const entity of routeWaypointEntities) {
+      viewer.entities.remove(entity)
+    }
   }
   routeWaypointEntities = []
 }
@@ -1067,10 +1033,10 @@ function setOfficialAccessHighlights(departure, receiving) {
 }
 
 function clearPlanPreviewLine() {
-  if (planPreviewEntity && viewer) {
+  if (planPreviewEntity && viewer && !viewer.isDestroyed()) {
     viewer.entities.remove(planPreviewEntity)
-    planPreviewEntity = null
   }
+  planPreviewEntity = null
 }
 
 function showPlanPreviewLine(start, end) {
@@ -2617,7 +2583,7 @@ async function reloadGridsInView() {
       })
       result = await fetchJson(`${API_BASE}/grids/bbox?${params}`, { signal: controller.signal })
       gridDemoMode.value = false
-    } else if (appConfig.grid?.useDemoWhenOffline !== false) {
+    } else if (legacyToolsEnabled.value && appConfig.grid?.useDemoWhenOffline === true) {
       const demoLimit = Math.min(bboxLimit.value, 800)
       if (!gridDemoMode.value && gridAlpha.value > 0.45) gridAlpha.value = 0.35
       result = {
@@ -2628,6 +2594,8 @@ async function reloadGridsInView() {
       }
       gridDemoMode.value = true
     } else {
+      gridDemoMode.value = false
+      clearAllGrids()
       showStatus('数据库未连接，无法加载格网')
       return
     }
@@ -2749,6 +2717,10 @@ async function loadHotspotsIndex() {
 }
 
 async function loadRoutesFromApi() {
+  if (!legacyToolsEnabled.value) {
+    routes.value = routes.value.filter((route) => route.planned)
+    return
+  }
   if (appConfig.routePlan?.alignToModel !== false) return
   try {
     const data = await fetchJson(`${API_BASE}/routes`)
@@ -2806,7 +2778,7 @@ async function setupTileset() {
 
   const url = cfg.url || './3dtiles/tileset.json'
   if (!(await jsonAssetExists(url))) {
-    showStatus('3D Tiles 未找到，将加载 campus-model2.glb 校园模型')
+    showStatus('校园实景模型暂不可用，已切换到校园三维模型')
     layers.tileset = false
     layers.fallbackModel = appConfig.fallbackModel?.enabled !== false
     return
@@ -2815,10 +2787,7 @@ async function setupTileset() {
   try {
     tileset3d = await createCesium3DTileset(url, {
       maximumScreenSpaceError: cfg.maximumScreenSpaceError || 16,
-    }
-    tileset3d = typeof Cesium.Cesium3DTileset.fromUrl === 'function'
-      ? await Cesium.Cesium3DTileset.fromUrl(url, tilesetOptions)
-      : new Cesium.Cesium3DTileset(tilesetOptions)
+    })
     if (tileset3d.readyPromise) await tileset3d.readyPromise
     viewer.scene.primitives.add(tileset3d)
     tileset3d.show = layers.tileset
@@ -2842,7 +2811,7 @@ async function setupTileset() {
     console.error('3D Tiles 加载失败', e)
     layers.tileset = false
     layers.fallbackModel = appConfig.fallbackModel?.enabled !== false
-    showStatus('3D Tiles 加载失败，将加载 campus-model2.glb 校园模型')
+    showStatus('校园实景模型加载失败，已切换到校园三维模型')
   }
 }
 
@@ -2898,7 +2867,7 @@ async function setupFallbackModel() {
       model: { uri: modelUrl, scale: cfg.scale || 100, color: Cesium.Color.WHITE },
       show: layers.fallbackModel,
     })
-    showStatus('校园模型 campus-model2.glb 已加载')
+    showStatus('校园三维模型已加载')
   } else {
     fallbackModelEntity = viewer.entities.add({
       name: 'CampusPlaceholder',
@@ -2910,7 +2879,7 @@ async function setupFallbackModel() {
         outlineColor: Cesium.Color.WHITE,
       },
       label: {
-        text: '请将 3D Tiles 或 campus-model2.glb 放入对应目录',
+        text: '校园三维模型暂不可用',
         font: '14px sans-serif',
         pixelOffset: new Cesium.Cartesian2(0, -50),
         fillColor: Cesium.Color.YELLOW,
@@ -2992,14 +2961,14 @@ function clearFlightEntities() {
   clearRouteWaypoints()
   clearPlanPreviewLine()
   clearReplanOriginalRoute()
-  if (routePolylineEntity) {
+  if (routePolylineEntity && viewer && !viewer.isDestroyed()) {
     viewer.entities.remove(routePolylineEntity)
-    routePolylineEntity = null
   }
-  if (droneEntity) {
+  routePolylineEntity = null
+  if (droneEntity && viewer && !viewer.isDestroyed()) {
     viewer.entities.remove(droneEntity)
-    droneEntity = null
   }
+  droneEntity = null
 }
 
 async function loadSelectedRoute(routeOverride = null, options = {}) {
@@ -3220,7 +3189,7 @@ async function flyToCampus() {
   )
 
   const afterFly = async () => {
-    showStatus('已定位到仙林校区白模')
+    showStatus('已定位到仙林校区')
     if (layers.fallbackModel && placeLayoutRaw.length) {
       await alignPlacesToModel()
     }
@@ -3283,7 +3252,7 @@ async function toggleFallbackModel() {
 async function toggleBuildings() {
   if (layers.buildings && layers.fallbackModel) {
     layers.buildings = false
-    showStatus('已启用 GLB 校园白模，无需叠加 GeoJSON 建筑块', 4000)
+    showStatus('校园三维模型已启用，维护图层无需重复显示', 4000)
     return
   }
   if (layers.buildings && !campusBuildingsDs) {

@@ -8,14 +8,14 @@
         <p>登录身份将决定可查看的工作台和可执行的操作。</p>
       </div>
 
-      <div v-if="loginOptions.demo_mode && loginOptions.roles?.length" class="demo-accounts">
-        <span>本地演示账号</span>
+      <div v-if="showQuickAccounts && loginOptions.demo_mode && loginOptions.roles?.length" class="quick-accounts">
+        <span>开发账号快捷填充</span>
         <div>
           <button
             v-for="account in loginOptions.roles"
             :key="account.role"
             type="button"
-            @click="selectDemoAccount(account)"
+            @click="selectQuickAccount(account)"
           >
             <b>{{ account.role_label }}</b>
             <small>{{ account.username }}</small>
@@ -47,6 +47,10 @@
 import { onMounted, ref } from 'vue'
 import { demoApi } from '../services/demoApi'
 
+defineProps({
+  showQuickAccounts: { type: Boolean, default: false },
+})
+
 const emit = defineEmits(['authenticated'])
 const username = ref('')
 const password = ref('')
@@ -54,7 +58,7 @@ const loading = ref(false)
 const error = ref('')
 const loginOptions = ref({ demo_mode: false, roles: [] })
 
-function selectDemoAccount(account) {
+function selectQuickAccount(account) {
   username.value = account.username
   password.value = account.demo_password || ''
   error.value = account.demo_password ? '' : '该账号已配置独立密码，请输入实际密码。'
@@ -128,10 +132,10 @@ onMounted(async () => {
 .login-heading h1 { margin: 6px 0 8px; font-size: 24px; }
 .login-heading p { margin: 0; color: #9fb2c8; font-size: 13px; line-height: 1.6; }
 
-.demo-accounts { margin: 22px 0 18px; }
-.demo-accounts > span { display: block; margin-bottom: 8px; color: #78909c; font-size: 11px; }
-.demo-accounts > div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
-.demo-accounts button {
+.quick-accounts { margin: 22px 0 18px; }
+.quick-accounts > span { display: block; margin-bottom: 8px; color: #78909c; font-size: 11px; }
+.quick-accounts > div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.quick-accounts button {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -143,9 +147,9 @@ onMounted(async () => {
   border-radius: 9px;
   cursor: pointer;
 }
-.demo-accounts button:hover { background: rgba(79, 195, 247, 0.15); border-color: rgba(79, 195, 247, 0.42); }
-.demo-accounts b { font-size: 11px; }
-.demo-accounts small { overflow: hidden; color: #78909c; font-size: 9px; text-overflow: ellipsis; }
+.quick-accounts button:hover { background: rgba(79, 195, 247, 0.15); border-color: rgba(79, 195, 247, 0.42); }
+.quick-accounts b { font-size: 11px; }
+.quick-accounts small { overflow: hidden; color: #78909c; font-size: 9px; text-overflow: ellipsis; }
 
 form { display: grid; gap: 13px; }
 label { display: grid; gap: 6px; text-align: left; }
@@ -177,7 +181,7 @@ input:focus { border-color: #4fc3f7; box-shadow: 0 0 0 3px rgba(79, 195, 247, 0.
 
 @media (max-width: 520px) {
   .login-card { padding: 22px; }
-  .demo-accounts > div { grid-template-columns: 1fr; }
-  .demo-accounts button { flex-direction: row; justify-content: space-between; }
+  .quick-accounts > div { grid-template-columns: 1fr; }
+  .quick-accounts button { flex-direction: row; justify-content: space-between; }
 }
 </style>

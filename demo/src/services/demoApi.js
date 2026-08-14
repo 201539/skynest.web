@@ -18,7 +18,7 @@ import { createMockDataset } from '../mocks/demoData'
 
 const API_BASE = '/api/demo'
 const V3_API_BASE = '/api/v3'
-const requestedMode = import.meta.env.VITE_DEMO_API_MODE || 'mock'
+const requestedMode = import.meta.env.VITE_DEMO_API_MODE || 'real'
 const requestedSafetyMode = import.meta.env.VITE_V3_SAFETY_MODE || 'real'
 const requestedWorkflowMode = import.meta.env.VITE_V3_WORKFLOW_MODE || 'real'
 const MOCK_STORAGE_KEY = 'skynest-demo-state-v3'

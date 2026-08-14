@@ -210,7 +210,7 @@ npm run dev
 
 ### 5. 登录账号
 
-本地开发默认提供三类演示账号，登录页可直接选择并自动填入：
+本地开发提供三类测试账号。正式页面默认不显示账号快捷填充入口，请手动输入：
 
 | 工作台 | 账号 | 本地演示密码 |
 | --- | --- | --- |
@@ -218,7 +218,13 @@ npm run dev
 | 校方端 | `school` | `School@2026` |
 | 运营端 | `operator` | `Operator@2026` |
 
-演示密码只在非生产环境且未配置独立密码时启用。正式部署必须在服务端 `.env` 中设置 `AUTH_STUDENT_PASSWORD`、`AUTH_SCHOOL_PASSWORD` 和 `AUTH_OPERATOR_PASSWORD`；生产环境不会启用上述默认密码。
+测试密码只在非生产环境且未配置独立密码时启用。正式部署必须在服务端 `.env` 中设置 `AUTH_STUDENT_PASSWORD`、`AUTH_SCHOOL_PASSWORD` 和 `AUTH_OPERATOR_PASSWORD`；生产环境不会启用上述默认密码。
+
+### 6. 正式页面模式
+
+`demo/public/config/app.json` 默认关闭旧版独立规划器、白模坐标标定、预设航线、GeoJSON 维护层、账号快捷填充和离线模拟格网。正式页面只展示真实三端业务、V3 正式建筑/节点、任务航线与真实数据库格网；数据库不可用时会明确报错，不会用模拟数据伪装成功。
+
+如需维护旧数据，可在本地临时把 `ui.showLegacyTools` 和 `ui.showQuickLogin` 设为 `true`，并按需启用 `grid.useDemoWhenOffline`。这些开关不应在比赛或生产页面开启。
 
 ## 三类角色操作流程
 

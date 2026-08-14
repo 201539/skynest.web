@@ -1,5 +1,9 @@
 {
   "title": "仙林校区无人机适航评估平台",
+  "ui": {
+    "showLegacyTools": false,
+    "showQuickLogin": false
+  },
   "campusCenter": { "lng": 118.944736, "lat": 32.107470, "height": 480 },
   "tileset3d": {
     "url": "./3dtiles/tileset.json",
@@ -37,7 +41,7 @@
     "reloadDebounceMs": 350,
     "zMin": 0,
     "zMax": 200,
-    "useDemoWhenOffline": true,
+    "useDemoWhenOffline": false,
     "showOutlines": false,
     "flightLayerOnly": true,
     "flightHeight": 80,
