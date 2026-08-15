@@ -129,6 +129,40 @@ async function getSummary() {
   }))
 }
 
+async function getGridMetadata() {
+  const result = await pool.query(`
+    SELECT
+      COUNT(*)::bigint AS total,
+      MIN(x_min) AS x_min, MAX(x_max) AS x_max,
+      MIN(y_min) AS y_min, MAX(y_max) AS y_max,
+      MIN(z_min) AS z_min, MAX(z_max) AS z_max,
+      MIN(x_max - x_min) AS step_x,
+      MIN(y_max - y_min) AS step_y,
+      MIN(z_max - z_min) AS step_z,
+      MIN(static_suitability_score) AS min_score,
+      MAX(static_suitability_score) AS max_score,
+      AVG(static_suitability_score) AS avg_score
+    FROM static.grid_3d
+  `)
+  const row = result.rows[0]
+  const number = (value) => value == null ? null : Number(value)
+  return {
+    total: Number(row.total),
+    bounds: {
+      xMin: number(row.x_min), xMax: number(row.x_max),
+      yMin: number(row.y_min), yMax: number(row.y_max),
+      zMin: number(row.z_min), zMax: number(row.z_max),
+    },
+    cellSize: {
+      x: number(row.step_x), y: number(row.step_y), z: number(row.step_z),
+    },
+    minScore: number(row.min_score),
+    maxScore: number(row.max_score),
+    avgScore: number(row.avg_score),
+    availableLods: [],
+  }
+}
+
 async function listFixedNodes(options = {}) {
   const limit = clampLimit(options.limit, 100, 1000)
   const offset = Math.max(Number.parseInt(options.offset, 10) || 0, 0)
@@ -140,9 +174,8 @@ async function listFixedNodes(options = {}) {
         ST_Y(ST_Transform(location, 4326)) AS lat,
         grid_code, capacity, status, description, created_at, updated_at,
         CASE
-          WHEN node_code = 'hub' OR node_code ~ '^[a-e]$' THEN 'departure'
-          WHEN node_code ~ '^[A-G]$' THEN 'receiving'
-          ELSE 'other'
+          WHEN node_code ~ '^[A-G]$' THEN 'student_access'
+          ELSE 'infrastructure'
         END AS service_group
       FROM static.fixed_nodes
       WHERE ($1::text IS NULL OR node_type = $1)
@@ -268,17 +301,16 @@ async function listBuildingNearestNodes(buildingName, options = {}) {
         n.grid_code, n.capacity, n.status, n.description,
         d.distance_m,
         CASE
-          WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
-          WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
-          ELSE 'other'
+          WHEN $2 IN ('departure', 'receiving') THEN $2
+          WHEN n.node_code ~ '^[A-G]$' THEN 'student_access'
+          ELSE 'infrastructure'
         END AS service_group
       FROM static.building_node_distance d
       JOIN static.fixed_nodes n ON n.node_code = d.node_code
       WHERE d.building_name = $1
         AND (
           $2 = 'all'
-          OR ($2 = 'departure' AND (n.node_code = 'hub' OR n.node_code ~ '^[a-e]$'))
-          OR ($2 = 'receiving' AND n.node_code ~ '^[A-G]$')
+          OR ($2 IN ('departure', 'receiving') AND n.node_code ~ '^[A-G]$')
         )
       ORDER BY d.distance_m, n.node_id
       LIMIT $3
@@ -306,36 +338,26 @@ async function getBuildingAccessPoints(buildingName, options = {}) {
           ST_Y(ST_Transform(n.location, 4326)) AS lat,
           n.grid_code, n.capacity, n.status, n.description,
           d.distance_m,
-          CASE
-            WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
-            WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
-            ELSE 'other'
-          END AS service_group,
-          ROW_NUMBER() OVER (
-            PARTITION BY CASE
-              WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
-              WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
-              ELSE 'other'
-            END
-            ORDER BY d.distance_m, n.node_id
-          ) AS group_rank
+          'student_access'::text AS service_group,
+          ROW_NUMBER() OVER (ORDER BY d.distance_m, n.node_id) AS group_rank
         FROM static.building_node_distance d
         JOIN static.fixed_nodes n ON n.node_code = d.node_code
         WHERE d.building_name = $1
+          AND n.status = 'active'
+          AND n.node_code ~ '^[A-G]$'
       )
       SELECT *
       FROM ranked
-      WHERE service_group IN ('departure', 'receiving')
-        AND group_rank <= $2
-      ORDER BY service_group, group_rank
+      WHERE group_rank <= $2
+      ORDER BY group_rank
     `,
     [name, clampLimit(options.limitPerGroup, 3, 13)]
   )
   const normalized = result.rows.map((row) => normalizeNodeDistanceRow(row))
   return {
     building,
-    departure_nodes: normalized.filter((node) => node.service_group === 'departure'),
-    receiving_nodes: normalized.filter((node) => node.service_group === 'receiving'),
+    departure_nodes: normalized.map((node) => ({ ...node, service_group: 'departure' })),
+    receiving_nodes: normalized.map((node) => ({ ...node, service_group: 'receiving' })),
   }
 }
 
@@ -714,6 +736,7 @@ module.exports = {
   READ_ONLY,
   getStatus,
   getSummary,
+  getGridMetadata,
   listFixedNodes,
   listBuildings,
   searchBuildings,

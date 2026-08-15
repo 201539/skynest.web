@@ -3,6 +3,7 @@ const { buildAgentContext } = require('./agentContext')
 const { buildFallbackAnalysis } = require('./fallbackRenderer')
 const { generateOllamaAnalysis, getOllamaStatus } = require('./ollamaProvider')
 const { generateDashScopeAnalysis, getDashScopeStatus } = require('./dashscopeProvider')
+const { generateDeepSeekAnalysis, getDeepSeekStatus } = require('./deepseekProvider')
 const { validateAgentOutput } = require('./outputSchema')
 
 function fallbackResult(context, config, reason) {
@@ -23,14 +24,16 @@ async function explainTask(task, options = {}) {
   const context = buildAgentContext(task)
   if (!config.enabled) return fallbackResult(context, config, 'llm_disabled')
   try {
-    const generated = config.provider === 'dashscope'
-      ? await generateDashScopeAnalysis(context, config)
-      : await generateOllamaAnalysis(context, config)
+    const generated = config.provider === 'deepseek'
+      ? await generateDeepSeekAnalysis(context, config)
+      : config.provider === 'dashscope'
+        ? await generateDashScopeAnalysis(context, config)
+        : await generateOllamaAnalysis(context, config)
     const model = validateAgentOutput(generated.output, context)
     const deterministic = buildFallbackAnalysis(context)
     return {
-      mode: config.provider === 'dashscope' ? 'cloud_llm' : 'local_llm',
-      mode_label: config.provider === 'dashscope' ? '百炼解释' : '本地模型解释',
+      mode: config.provider === 'ollama' ? 'local_llm' : 'cloud_llm',
+      mode_label: config.provider === 'deepseek' ? 'DeepSeek解释' : config.provider === 'dashscope' ? '百炼解释' : '本地模型解释',
       provider: config.provider,
       model: config.model,
       fallback_used: false,
@@ -55,7 +58,11 @@ async function explainTask(task, options = {}) {
 
 async function getAgentModelStatus(options = {}) {
   const config = getLlmConfig(options.config)
-  const providerStatus = config.provider === 'dashscope' ? getDashScopeStatus(config) : await getOllamaStatus(config)
+  const providerStatus = config.provider === 'deepseek'
+    ? getDeepSeekStatus(config)
+    : config.provider === 'dashscope'
+      ? getDashScopeStatus(config)
+      : await getOllamaStatus(config)
   return {
     enabled: config.enabled,
     provider: config.provider,

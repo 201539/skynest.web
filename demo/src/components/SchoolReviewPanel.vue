@@ -102,19 +102,22 @@
         <TaskAgentAnalysisCard
           v-if="selectedItem.task.agent_analysis"
           :analysis="selectedItem.task.agent_analysis"
+          :task="selectedItem.task"
+          :route="selectedItem.route"
           audience="school"
+          :task-status="selectedItem.task.status"
         />
 
         <div v-if="accessPointPlan" class="access-point-card">
-          <div class="section-title">建筑接入方案</div>
+          <div class="section-title">师生 L3 放货与收货方案</div>
           <div>
-            <span>起点接入</span>
-            <strong>{{ selectedItem.task.origin }} → {{ accessPointPlan.departure.node_code }}</strong>
+            <span>放货节点</span>
+            <strong>{{ selectedItem.task.origin }} → L3 {{ accessPointPlan.departure.node_code }}</strong>
             <small>{{ accessPointPlan.departure.node_name }} · 约{{ Math.round(accessPointPlan.departure.distance_m) }}米</small>
           </div>
           <div>
-            <span>终点接入</span>
-            <strong>{{ accessPointPlan.receiving.node_code }} → {{ selectedItem.task.destination }}</strong>
+            <span>收货节点</span>
+            <strong>L3 {{ accessPointPlan.receiving.node_code }} → {{ selectedItem.task.destination }}</strong>
             <small>{{ accessPointPlan.receiving.node_name }} · 约{{ Math.round(accessPointPlan.receiving.distance_m) }}米</small>
           </div>
         </div>
@@ -142,7 +145,6 @@
             <p v-if="selectedItem.route.avoided_zones?.length">
               已绕开：{{ selectedItem.route.avoided_zones.join('、') }}
             </p>
-            <RouteExplanationCard :explanation="selectedItem.route.explanation" />
           </template>
           <p v-else class="muted">暂未生成推荐航线，批准后可交由路径算法计算。</p>
         </div>
@@ -330,7 +332,6 @@ import { APPROVAL_DECISION, RESTRICTION_STATUS, TASK_STATUS } from '../domain/co
 import { demoApi } from '../services/demoApi'
 import AuditTrailPanel from './AuditTrailPanel.vue'
 import AgentModelStatusCard from './AgentModelStatusCard.vue'
-import RouteExplanationCard from './RouteExplanationCard.vue'
 import TaskAgentAnalysisCard from './TaskAgentAnalysisCard.vue'
 
 const emit = defineEmits(['reviewed', 'notify', 'view-route', 'safety-updated', 'view-restriction'])

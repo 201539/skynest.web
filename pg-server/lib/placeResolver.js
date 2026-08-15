@@ -9,8 +9,7 @@ function normalizeName(value) {
 }
 
 function accessPointPredicate(role) {
-  if (role === 'departure') return "(n.node_code = 'hub' OR n.node_code ~ '^[a-e]$')"
-  if (role === 'receiving') return "n.node_code ~ '^[A-G]$'"
+  if (role === 'departure' || role === 'receiving') return "n.node_code ~ '^[A-G]$'"
   throw new TypeError('place role must be departure or receiving')
 }
 
@@ -89,7 +88,7 @@ async function resolvePlace(inputName, options = {}) {
   const role = options.role || 'receiving'
   const accessPoint = await findNearestAccessPoint(options.client, match.row.building_name, role)
   if (!accessPoint) {
-    const error = new Error(`建筑“${match.row.building_name}”没有可用的${role === 'departure' ? '起飞' : '接收'}节点`)
+    const error = new Error(`建筑“${match.row.building_name}”附近没有可用的L3三级运输节点`)
     error.code = 'PLACE_NOT_FOUND'
     error.details = { place: match.row.building_name, role }
     throw error

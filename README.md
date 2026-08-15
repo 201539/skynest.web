@@ -15,8 +15,18 @@
 | 运营端 | 分配无人机和接驳节点、派发、运输、到达、交付及资源释放 |
 | 动态 Cost | 静态适航、人口/校历/上课时段/场馆开放/食堂营业、天气、施工/活动、禁飞区和能源风险综合计算 |
 | 路径算法 | 基于动态 Cost 的 A*、航线持久化、新旧版本关联和安全失败处理 |
-| 解释能力 | 航线确定性解释；可选 Ollama/百炼任务说明，模型不可用时安全降级 |
+| 解释能力 | 师生自然语言需求解析；可选 Ollama/百炼/DeepSeek；航线解释包含SLA、直线距离、绕行、天气与分类风险，模型不可用或数字校验失败时安全降级 |
 | 身份权限 | 登录会话、师生/校方/运营接口权限、师生任务隔离、服务端操作者身份 |
+
+## 本次更新重点
+
+- 师生端保留“自然语言解析＋表单确认”流程，解析结果不会自动提交；输入框下方提供当前稳定句式示例与人工确认提醒。
+- 师生收发货只允许映射到 `A–G` 的 L3 三级运输节点，L1、L2 不作为师生放货或收货节点；同一 L3 节点仍允许形成 0 米节点间航线。
+- 新增 DeepSeek 服务端接入。API Key 仅从后端环境变量读取，不进入 Vue 源码、浏览器请求或数据库解释内容。
+- 航线生成后保存一段式 Agent 解释，包含预计飞行时间与时限可达性、实际/直线距离和绕行比例、默认天气提示及物品分类核验项。
+- 危险化学品、高价值设备、医疗/生物样本分别使用专项核验规则；Agent 仅解释已有证据，不修改节点、机型、航线或审批结果。
+- 航线解释状态支持 `pending`、`generating`、`generated`、`fallback` 和 `failed`，校方端与运营端可以查看生成状态。
+- 新增数字硬校验：模型回答中的路线距离和预计时间必须与算法证据一致，否则自动回退到确定性规则说明。
 
 ## 目录结构
 
@@ -40,6 +50,8 @@ skynest.web-main\
 └── pg-server/                     # 后端 API
     ├── index.js                   # Express 服务
     ├── agent/                     # AI Agent 解析、地点匹配与运力规则
+    ├── llm/                       # Ollama、百炼、DeepSeek及航线解释服务
+    ├── migrations/007_route_agent_explanations.sql  # 航线解释与生成状态字段
     ├── demo/                      # 任务状态、路线编排与企业沙箱
     ├── public/student/            # 学生端轻量页面
     ├── data/routes.json           # 示范航线
@@ -120,6 +132,22 @@ PORT=3001                  # API 监听端口
 ```
 
 `.env` 只保存在本机并已被 Git 忽略；未设置密码时，后端不会使用仓库内置密码。
+
+### 3. 配置解释模型（可选）
+
+系统默认可使用 V3 确定性规则说明。若启用 DeepSeek，在本机 `pg-server/.env` 中配置：
+
+```env
+LLM_ENABLED=true
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=请填写新建的服务端密钥
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
+LLM_FALLBACK_ENABLED=true
+LLM_TIMEOUT_MS=90000
+```
+
+不要把真实 `DEEPSEEK_API_KEY` 写入 `.env.example`、前端代码、README、提交记录或截图。若密钥曾在聊天或日志中明文出现，应先在平台撤销并重新生成。
 
 ### 4. 导入格网数据（约 240 万条）
 
@@ -356,6 +384,15 @@ npm run verify-route-explanation
 npm run verify-agent
 npm run verify-auth
 ```
+
+首次拉取包含本次航线解释功能的代码后，还需要执行：
+
+```powershell
+cd .\pg-server
+npm run migrate-v3
+```
+
+该命令会应用 `007_route_agent_explanations.sql`，为当前航线保存解释正文、生成状态、生成时间和错误信息。
 
 前端生产构建：
 

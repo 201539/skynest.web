@@ -46,12 +46,14 @@ async function main() {
     assert.equal(libraryAccess.receiving_nodes.length, 3, 'Receiving-node ranking is incomplete')
     assert.ok(
       libraryAccess.departure_nodes.every((node) => node.service_group === 'departure'),
-      'Departure ranking returned a receiving node'
+      'Departure ranking returned an invalid service group'
     )
     assert.ok(
       libraryAccess.receiving_nodes.every((node) => node.service_group === 'receiving'),
-      'Receiving ranking returned a departure node'
+      'Receiving ranking returned an invalid service group'
     )
+    assert.ok(libraryAccess.departure_nodes.every((node) => /^[A-G]$/.test(node.node_code)), 'Student departure must use L3 nodes')
+    assert.ok(libraryAccess.receiving_nodes.every((node) => /^[A-G]$/.test(node.node_code)), 'Student receiving must use L3 nodes')
     assert.ok(drones.length > 0, 'No drones were returned')
     assert.ok(rules.length > 0, 'No matching vehicle rule was returned')
     assert.ok(grids.length > 0, 'No grid cells were returned for the campus test bbox')

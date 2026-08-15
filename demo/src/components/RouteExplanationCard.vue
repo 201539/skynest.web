@@ -3,9 +3,9 @@
     <div class="explanation-heading">
       <div>
         <span class="assistant-mark" aria-hidden="true">AI</span>
-        <strong>航线解释助手</strong>
+        <strong>算法航线解释</strong>
       </div>
-      <i>基于算法结果</i>
+      <i>确定性解释已生成</i>
     </div>
 
     <p>{{ explanation.summary }}</p>

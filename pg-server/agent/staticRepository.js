@@ -42,7 +42,7 @@ async function loadAgentContext(pool) {
             JOIN static.fixed_nodes n ON n.node_code = d.node_code
             WHERE d.building_name = b.building_name
               AND n.status = 'active'
-              AND (n.node_code = 'hub' OR n.node_code ~ '^[a-e]$')
+              AND n.node_code ~ '^[A-G]$'
             ORDER BY d.distance_m, n.node_id
             LIMIT 3
           ) ranked

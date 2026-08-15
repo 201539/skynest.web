@@ -30,17 +30,22 @@
           @input="clearParseFeedback"
         ></textarea>
         <div class="agent-actions">
-          <span>支持识别地点、物品、重量、时限和特殊要求</span>
+          <span>建议按“具体日期或今天/明天＋几点前，把数字公斤（或数字克）＋物品类型从正式起点建筑送到正式终点建筑，要求……”填写。示例：今天下午4点前，把2公斤文件从杜厦图书馆送到行政南楼，要求防水。请一次只写一项任务；暂勿使用“三斤”“半小时内”等口语表达，地点仍须在表单中确认。</span>
           <button
             type="button"
             class="agent-btn"
             :disabled="parsing || !form.input_text"
             @click="parseTaskInput"
           >
-            {{ parsing ? '解析中…' : '智能解析并回填' }}
+            {{ parsing ? '智能解释生成中…' : '智能解析并生成解释' }}
           </button>
         </div>
       </label>
+
+      <div v-if="parsing" class="agent-generation-status generating" role="status" aria-live="polite">
+        <i></i>
+        <span>正在解析需求并调用智能模型生成解释，请稍候…</span>
+      </div>
 
       <div v-if="parseFeedback" class="parse-feedback" :class="parseFeedback.tone" aria-live="polite">
         <strong>{{ parseFeedback.title }}</strong>
@@ -281,24 +286,9 @@
             <button type="button" @click="editRejectedTask(selectedStudentTask)">修改并重新提交</button>
           </div>
 
-          <div v-if="selectedStudentTask.route" class="student-route-card">
-            <div class="student-route-heading">
-              <span>运输航线</span>
-              <button
-                type="button"
-                @click="emit('view-route', { route: selectedStudentTask.route, task: selectedStudentTask.task })"
-              >
-                在地图中查看
-              </button>
-            </div>
-              <div>
-                <i>{{ selectedStudentTask.route.algorithm }}</i>
-                <i>{{ selectedStudentTask.route.waypoints?.length || 0 }} 个航点</i>
-                <i>{{ formatDistance(selectedStudentTask.route.total_length_meters) }}</i>
-                <i>{{ formatDuration(selectedStudentTask.route.estimated_duration_seconds) }}</i>
-              </div>
-              <RouteExplanationCard :explanation="selectedStudentTask.route.explanation" />
-            </div>
+          <p v-if="selectedStudentTask.route" class="route-visibility-note">
+            校方已生成运输航线；具体航点、风险和 Agent 解释仅在校方端与运营端显示。
+          </p>
         </div>
       </template>
     </section>
@@ -311,7 +301,6 @@ import { APPROVAL_DECISION, TASK_STATUS, createTransportTask, validateTransportT
 import { HIGH_RISK_CATEGORIES, TASK_ITEM_CATEGORIES } from '../domain/taskParser'
 import { demoApi } from '../services/demoApi'
 import { findExactBuilding as findExactBuildingInList } from '../utils/buildingSearch'
-import RouteExplanationCard from './RouteExplanationCard.vue'
 import BuildingSearchField from './BuildingSearchField.vue'
 
 const emit = defineEmits(['submitted', 'notify', 'view-route'])
@@ -574,7 +563,7 @@ async function handleBuildingSelection(field, building, options = {}) {
     if (requestNumber !== latestRequest) return
     accessRef.value = isOrigin ? access.departure_nodes?.[0] || null : access.receiving_nodes?.[0] || null
     if (!accessRef.value) {
-      errors[field] = isOrigin ? '该建筑没有可用起飞节点' : '该建筑没有可用L3接驳箱'
+      errors[field] = `该建筑附近没有可用的L3三级运输节点`
     }
   } catch (error) {
     const latestRequest = isOrigin ? originAccessRequest : destinationAccessRequest
@@ -736,8 +725,8 @@ function validateForm() {
   } else {
     if (!findExactBuilding(form.origin)) errors.origin = '请从83栋正式建筑中选择起点'
     if (!findExactBuilding(form.destination)) errors.destination = '请从83栋正式建筑中选择终点'
-    if (findExactBuilding(form.origin) && !originAccessPoint.value) errors.origin = '起点的可用起飞节点尚未确认'
-    if (findExactBuilding(form.destination) && !destinationAccessPoint.value) errors.destination = '终点的L3接驳箱尚未确认'
+    if (findExactBuilding(form.origin) && !originAccessPoint.value) errors.origin = '起点建筑对应的放货L3节点尚未确认'
+    if (findExactBuilding(form.destination) && !destinationAccessPoint.value) errors.destination = '终点建筑对应的收货L3节点尚未确认'
   }
 
   if (agentAnalysis.value && !agentConfirmed.value) {
@@ -995,6 +984,10 @@ textarea { resize: vertical; line-height: 1.5; }
 }
 
 .agent-btn:disabled { opacity: 0.45; cursor: wait; }
+
+.agent-generation-status { display: flex; align-items: center; gap: 8px; margin: -2px 0 10px; padding: 8px 10px; color: #b3e5fc; background: rgba(3, 169, 244, 0.09); border: 1px solid rgba(79, 195, 247, 0.22); border-radius: 7px; font-size: 9px; }
+.agent-generation-status i { width: 10px; height: 10px; border: 2px solid rgba(79, 195, 247, 0.25); border-top-color: #4fc3f7; border-radius: 50%; animation: agent-spin 0.8s linear infinite; }
+@keyframes agent-spin { to { transform: rotate(360deg); } }
 
 .parse-feedback {
   grid-column: 1 / -1;
@@ -1334,6 +1327,7 @@ input[type='datetime-local'] { color-scheme: dark; }
 .rejected-task-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 9px; color: #bcaaa4; background: rgba(255, 152, 0, 0.07); border: 1px solid rgba(255, 183, 77, 0.18); border-radius: 7px; }
 .rejected-task-actions span { font-size: 9px; line-height: 1.4; }
 .rejected-task-actions button { flex: 0 0 auto; padding: 6px 8px; color: #4e2f00; font-weight: 700; background: linear-gradient(135deg, #ffe082, #ffb74d); border: 0; border-radius: 6px; font-size: 9px; cursor: pointer; }
+.route-visibility-note { margin: 8px 0 0; padding: 8px 9px; color: #90a4ae; background: rgba(38, 50, 56, 0.35); border-radius: 6px; font-size: 9px; line-height: 1.5; }
 .student-route-card > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
 .student-route-card i { padding: 3px 6px; color: #b3e5fc; background: rgba(3, 169, 244, 0.1); border-radius: 5px; font-size: 8px; font-style: normal; }
 .student-route-card .student-route-heading { align-items: center; justify-content: space-between; margin-top: 0; }

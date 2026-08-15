@@ -66,61 +66,7 @@ function toNumber(value) {
 async function getGridMetadata() {
   if (gridMetadataPromise) return gridMetadataPromise
 
-  gridMetadataPromise = (async () => {
-    const statsResult = await pool.query(`
-      SELECT
-        COUNT(*) AS total,
-        MIN(x_min) AS x_min,
-        MAX(x_max) AS x_max,
-        MIN(y_min) AS y_min,
-        MAX(y_max) AS y_max,
-        MIN(z_min) AS z_min,
-        MAX(z_max) AS z_max,
-        MIN(x_max - x_min) AS step_x,
-        MIN(y_max - y_min) AS step_y,
-        MIN(z_max - z_min) AS step_z,
-        MIN(static_suitability_score) AS min_score,
-        MAX(static_suitability_score) AS max_score,
-        AVG(static_suitability_score) AS avg_score
-      FROM nanjing_uni_3d_grid_new
-    `)
-    const row = statsResult.rows[0]
-
-    let availableLods = []
-    try {
-      const lodResult = await pool.query(`
-        SELECT DISTINCT lod
-        FROM nanjing_uni_3d_grid_lod
-        ORDER BY lod
-      `)
-      availableLods = lodResult.rows
-        .map((item) => parseInt(item.lod, 10))
-        .filter((lod) => GRID_LOD_LEVELS.includes(lod))
-    } catch (e) {
-      console.warn('Grid LOD table is unavailable, falling back to raw grids:', e.message)
-    }
-
-    return {
-      total: parseInt(row.total, 10),
-      bounds: {
-        xMin: toNumber(row.x_min),
-        xMax: toNumber(row.x_max),
-        yMin: toNumber(row.y_min),
-        yMax: toNumber(row.y_max),
-        zMin: toNumber(row.z_min),
-        zMax: toNumber(row.z_max),
-      },
-      cellSize: {
-        x: toNumber(row.step_x),
-        y: toNumber(row.step_y),
-        z: toNumber(row.step_z),
-      },
-      minScore: toNumber(row.min_score),
-      maxScore: toNumber(row.max_score),
-      avgScore: toNumber(row.avg_score),
-      availableLods,
-    }
-  })().catch((e) => {
+  gridMetadataPromise = v3Database.getGridMetadata().catch((e) => {
     gridMetadataPromise = null
     throw e
   })
@@ -390,8 +336,8 @@ function generateDemoGrids(bbox, limit = 800) {
 
 app.get('/api/health', async (_req, res) => {
   try {
-    await pool.query('SELECT 1')
-    res.json({ ok: true, database: 'connected' })
+    const status = await v3Database.getStatus()
+    res.json({ ok: status.ok, database: status.database, grid_source: 'v3' })
   } catch (e) {
     res.status(503).json({ ok: false, database: 'disconnected', error: e.message })
   }
@@ -1144,6 +1090,29 @@ app.get('/api/grids/bbox', async (req, res) => {
     if (scoreMin != null && scoreMax != null && scoreMin > scoreMax) {
       return res.status(400).json({ error: '适宜性分数下限不能大于上限' })
     }
+
+    // The map and the planner now read the same V3 grid source. This endpoint
+    // keeps the legacy response shape so the existing Cesium layer remains compatible.
+    const v3StartedAt = Date.now()
+    const rows = await v3Database.listGridCells({ xMin, xMax, yMin, yMax, zMin, zMax, limit })
+    const filteredRows = rows.filter((row) => {
+      const score = Number(row.static_suitability_score)
+      return (scoreMin == null || score >= scoreMin) && (scoreMax == null || score <= scoreMax)
+    })
+    return res.json({
+      demo: false,
+      source: 'v3',
+      database: process.env.PG_V3_DATABASE || v3Database.DEFAULT_DATABASE,
+      bbox: { xMin, xMax, yMin, yMax, zMin, zMax },
+      count: filteredRows.length,
+      sourceCount: rows.length,
+      limit: Math.min(limit, 20000),
+      lod: 1,
+      aggregated: false,
+      truncated: rows.length === Math.min(limit, 20000),
+      queryMs: Date.now() - v3StartedAt,
+      data: filteredRows.map(compactGridRow),
+    })
 
     const metadata = await getGridMetadata()
     const clipped = intersectGridBounds({ xMin, xMax, yMin, yMax, zMin, zMax }, metadata)

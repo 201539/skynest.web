@@ -76,6 +76,8 @@
         <TaskAgentAnalysisCard
           v-if="selectedItem.task.agent_analysis"
           :analysis="selectedItem.task.agent_analysis"
+          :task="selectedItem.task"
+          :route="selectedItem.route"
           audience="operator"
           :task-status="selectedItem.task.status"
         />
@@ -99,7 +101,6 @@
               <span>{{ formatDuration(selectedItem.route.estimated_duration_seconds) }}</span>
             </div>
             <p>风险提示：{{ selectedItem.route.main_risk_factors?.map(riskFactorLabel).join('、') || '暂无明显风险' }}</p>
-            <RouteExplanationCard :explanation="selectedItem.route.explanation" />
           </template>
           <p v-else class="muted">航点链暂未生成，请联系路径规划模块。</p>
         </div>
@@ -168,7 +169,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { DRONE_STATUS, NODE_AVAILABILITY, TASK_STATUS } from '../domain/contracts'
 import { demoApi } from '../services/demoApi'
-import RouteExplanationCard from './RouteExplanationCard.vue'
 import TaskAgentAnalysisCard from './TaskAgentAnalysisCard.vue'
 
 const emit = defineEmits(['updated', 'notify', 'view-route'])

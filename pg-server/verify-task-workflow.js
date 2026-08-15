@@ -62,7 +62,7 @@ async function main() {
     assert.ok(approved.route.waypoints.length >= 2)
     assert.ok(approved.route.total_length_meters > 0)
     assert.equal(approved.route.planning_context.access_points.departure.building_name, '杜厦图书馆')
-    assert.match(approved.route.planning_context.access_points.departure.node_code, /^(hub|[a-e])$/)
+    assert.match(approved.route.planning_context.access_points.departure.node_code, /^[A-G]$/)
     assert.equal(approved.route.planning_context.access_points.receiving.building_name, '行政南楼')
     assert.match(approved.route.planning_context.access_points.receiving.node_code, /^[A-G]$/)
 

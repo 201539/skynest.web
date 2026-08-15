@@ -93,11 +93,11 @@ function buildAnalysis(task, originMatch, destinationMatch, vehicleResult, statu
   if (vehicleResult.required_handling?.length) reasoning.push(`数据库要求：${vehicleResult.required_handling.join('、')}`)
   if (originMatch.selected_building?.nearest_departure) {
     const point = originMatch.selected_building.nearest_departure
-    reasoning.push(`起点接入：${originMatch.selected_building.name} → ${point.node_code}（约${Math.round(point.distance_m)}米）`)
+    reasoning.push(`放货接入：${originMatch.selected_building.name} → L3节点${point.node_code}（约${Math.round(point.distance_m)}米）`)
   }
   if (destinationMatch.selected_building?.nearest_receiving) {
     const point = destinationMatch.selected_building.nearest_receiving
-    reasoning.push(`终点接入：${point.node_code} → ${destinationMatch.selected_building.name}（约${Math.round(point.distance_m)}米）`)
+    reasoning.push(`收货接入：L3节点${point.node_code} → ${destinationMatch.selected_building.name}（约${Math.round(point.distance_m)}米）`)
   }
 
   const manualReasons = []
@@ -146,7 +146,10 @@ function enrichTask(task, context = {}) {
   }
   const vehicleResult = recommendVehicle(normalizedLocations, context)
   const status = workflowStatus(normalizedLocations, originMatch, destinationMatch, vehicleResult)
-  const candidateNodeIds = (destinationMatch.selected_building?.receiving_nodes || [])
+  const candidateNodeIds = [
+    ...(originMatch.selected_building?.departure_nodes || []),
+    ...(destinationMatch.selected_building?.receiving_nodes || []),
+  ]
     .map((item) => Number(item.node_id))
     .filter((id) => Number.isInteger(id) && id > 0)
   const normalizedTask = {

@@ -16,6 +16,7 @@
         <select v-model="provider" :disabled="saving">
           <option value="ollama">本地 Ollama</option>
           <option value="dashscope">阿里云百炼</option>
+          <option value="deepseek">DeepSeek API</option>
         </select>
       </label>
       <label class="model-switch">
@@ -49,7 +50,7 @@ const error = ref('')
 
 const statusTone = computed(() => {
   if (!enabled.value) return 'rules'
-  if (status.value.provider === 'dashscope') return status.value.configured ? 'online' : 'warning'
+  if (['dashscope', 'deepseek'].includes(status.value.provider)) return status.value.configured ? 'online' : 'warning'
   return status.value.reachable && status.value.model_installed ? 'online' : 'warning'
 })
 const statusLabel = computed(() => ({
@@ -60,6 +61,7 @@ const statusLabel = computed(() => ({
 const connectivityLabel = computed(() => {
   if (!enabled.value) return '模型关闭，不会发起外部请求。'
   if (status.value.provider === 'dashscope') return status.value.configured ? '百炼已配置。' : '百炼密钥未在服务端配置。'
+  if (status.value.provider === 'deepseek') return status.value.configured ? 'DeepSeek API已配置。' : 'DeepSeek密钥未在服务端配置。'
   if (!status.value.reachable) return 'Ollama 未连接，解析时会自动使用规则说明。'
   return status.value.model_installed ? '本地模型已安装。' : 'Ollama 已连接，但目标模型未安装。'
 })
