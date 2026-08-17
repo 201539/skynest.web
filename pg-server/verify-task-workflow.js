@@ -53,7 +53,10 @@ async function main() {
       decision: 'approved',
       reason: '事务自测批准',
       reviewer: { name: '自动审核员', department: '项目组' },
-    }, { client })
+    }, {
+      client,
+      planningAt: '2026-08-11T12:00:00+08:00',
+    })
     assert.equal(approved.task.status, 'approved')
     assert.equal(approved.approval.decision, 'approved')
     assert.equal(approved.approval.reason, '事务自测批准')
@@ -61,6 +64,10 @@ async function main() {
     assert.equal(approved.route.cost_model, 'dynamic-v1')
     assert.ok(approved.route.waypoints.length >= 2)
     assert.ok(approved.route.total_length_meters > 0)
+    assert.equal(approved.route.planning_context.cost_thresholds.minFlightHeight, 40)
+    assert.equal(approved.route.planning_context.cost_thresholds.maxFlightHeight, 120)
+    assert.equal(approved.route.planning_context.cost_weights.distance, 1)
+    assert.equal(approved.route.planning_context.cost_weights.maneuver, 1)
     assert.equal(approved.route.planning_context.access_points.departure.building_name, '杜厦图书馆')
     assert.match(approved.route.planning_context.access_points.departure.node_code, /^(hub|[a-e])$/)
     assert.equal(approved.route.planning_context.access_points.receiving.building_name, '行政南楼')

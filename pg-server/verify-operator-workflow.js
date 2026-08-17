@@ -53,7 +53,7 @@ async function main() {
       decision: 'approved',
       reason: '运营闭环自测批准',
       reviewer: { name: '自动审核员', department: '项目组' },
-    }, { client })
+    }, { client, planningAt: '2026-08-11T12:00:00+08:00' })
     assert.equal(approved.task.status, 'approved')
     assert.ok(approved.route)
 

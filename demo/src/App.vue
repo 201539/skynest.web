@@ -201,6 +201,10 @@
         </div>
         <div v-if="planResult.fallbackUsed" class="demo-hint">未找到格网最优路径，已使用直线备选</div>
         <div v-if="planResult.demo" class="demo-hint">演示格网模式</div>
+        <RouteDecisionTraceCard
+          v-if="planResult.dynamicCost?.enabled"
+          :route="planResult"
+        />
       </div>
     </section>
 
@@ -424,6 +428,7 @@ import * as Cesium from 'cesium'
 import proj4 from 'proj4'
 import OperatorTaskPanel from './components/OperatorTaskPanel.vue'
 import LoginPanel from './components/LoginPanel.vue'
+import RouteDecisionTraceCard from './components/RouteDecisionTraceCard.vue'
 import SchoolReviewPanel from './components/SchoolReviewPanel.vue'
 import TaskSubmitPanel from './components/TaskSubmitPanel.vue'
 import { ROLE } from './domain/contracts'
@@ -3114,7 +3119,7 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
       show: layers.drone,
       position: Cesium.Cartesian3.fromDegrees(start.lng, start.lat, start.height),
       ellipsoid: {
-        radii: new Cesium.Cartesian3(8, 8, 4),
+        radii: new Cesium.Cartesian3(6, 6, 3),
         material: Cesium.Color.ORANGE,
         outline: true,
         outlineColor: Cesium.Color.WHITE,

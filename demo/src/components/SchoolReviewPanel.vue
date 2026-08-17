@@ -143,6 +143,7 @@
               已绕开：{{ selectedItem.route.avoided_zones.join('、') }}
             </p>
             <RouteExplanationCard :explanation="selectedItem.route.explanation" />
+            <RouteDecisionTraceCard :route="selectedItem.route" />
           </template>
           <p v-else class="muted">暂未生成推荐航线，批准后可交由路径算法计算。</p>
         </div>
@@ -330,6 +331,7 @@ import { APPROVAL_DECISION, RESTRICTION_STATUS, TASK_STATUS } from '../domain/co
 import { demoApi } from '../services/demoApi'
 import AuditTrailPanel from './AuditTrailPanel.vue'
 import AgentModelStatusCard from './AgentModelStatusCard.vue'
+import RouteDecisionTraceCard from './RouteDecisionTraceCard.vue'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 import TaskAgentAnalysisCard from './TaskAgentAnalysisCard.vue'
 

@@ -1,20 +1,28 @@
 const COST_PROFILES = Object.freeze({
   balanced: Object.freeze({
     riskScale: 4,
+    distanceWeight: 1,
+    maneuverWeight: 1,
     weights: Object.freeze({ static: 0.3, population: 0.2, weather: 0.2, runtime: 0.2, energy: 0.1 }),
   }),
   safest: Object.freeze({
     riskScale: 6,
+    distanceWeight: 1,
+    maneuverWeight: 1,
     weights: Object.freeze({ static: 0.35, population: 0.25, weather: 0.2, runtime: 0.15, energy: 0.05 }),
   }),
   fastest: Object.freeze({
     riskScale: 2.5,
+    distanceWeight: 1,
+    maneuverWeight: 1,
     weights: Object.freeze({ static: 0.25, population: 0.1, weather: 0.15, runtime: 0.15, energy: 0.35 }),
   }),
 })
 
 const DEFAULT_THRESHOLDS = Object.freeze({
   minSuitability: 0.2,
+  minFlightHeight: 40,
+  maxFlightHeight: 120,
   populationReference: 1000,
   holidayPopulationFactor: 0.6,
   classPeriodRiskBoost: 0.12,
@@ -91,6 +99,14 @@ function resolveModel(options = {}) {
   return {
     profile: profileName,
     riskScale: Math.max(finiteNumber(options.riskScale, profile.riskScale), 0),
+    distanceWeight: Math.max(
+      finiteNumber(options.distanceWeight, finiteNumber(options.weights?.distance, profile.distanceWeight)),
+      0
+    ),
+    maneuverWeight: Math.max(
+      finiteNumber(options.maneuverWeight, finiteNumber(options.weights?.maneuver, profile.maneuverWeight)),
+      0
+    ),
     weights: normalizeWeights({ ...profile.weights, ...(options.weights || {}) }),
     thresholds: normalizeThresholds(options.thresholds),
   }
@@ -101,7 +117,7 @@ function calculateStaticRisk(cell) {
   const sensitivity = clamp01(cell.sensitivity_level)
   const privacy = clamp01(cell.privacy_level)
   return {
-    risk: clamp01((1 - suitability) * 0.7 + sensitivity * 0.2 + privacy * 0.1),
+    risk: clamp01(1 - suitability),
     suitability,
     sensitivity,
     privacy,
@@ -117,11 +133,34 @@ function calculatePopulationRisk(cell, context, thresholds) {
     : rawPopulation
   const reference = Math.max(finiteNumber(thresholds.populationReference, 1000), 1)
   const risk = clamp01(Math.log1p(effectivePopulation) / Math.log1p(reference))
+  const source = periodicPopulation == null ? 'static' : 'periodic'
+  const requestedWeekday = finiteNumber(context.population_requested_weekday)
+  const requestedHour = finiteNumber(context.population_requested_hour)
+  const sampleWeekday = finiteNumber(context.population_sample_weekday)
+  const sampleHour = finiteNumber(context.population_sample_hour)
+  let timeMatch = 'not_recorded'
+  if (source === 'static') {
+    timeMatch = 'static_fallback'
+  } else if (
+    requestedWeekday != null && requestedHour != null
+    && sampleWeekday != null && sampleHour != null
+  ) {
+    timeMatch = requestedWeekday === sampleWeekday && requestedHour === sampleHour
+      ? 'exact'
+      : 'nearest_hour'
+  }
   return {
     risk,
     rawPopulation,
     effectivePopulation,
-    source: periodicPopulation == null ? 'static' : 'periodic',
+    reference,
+    normalization: 'log1p_reference',
+    source,
+    requestedWeekday,
+    requestedHour,
+    sampleWeekday,
+    sampleHour,
+    timeMatch,
     isHoliday: Boolean(context.is_holiday),
   }
 }
@@ -256,12 +295,27 @@ function calculateCellCost(cell, context = {}, options = {}) {
   const runtimeRisk = calculateRuntimeRisk(context)
   const energyRisk = calculateEnergyRisk(context, thresholds)
   const noFlyZoneNames = asNames(context.no_fly_zone_names)
+  const flightHeight = finiteNumber(context.flight_height)
+  const minFlightHeight = finiteNumber(
+    context.min_flight_height,
+    finiteNumber(thresholds.minFlightHeight, 40)
+  )
+  const maxFlightHeight = finiteNumber(
+    context.max_flight_height,
+    finiteNumber(thresholds.maxFlightHeight, 120)
+  )
   const hardConstraints = []
 
-  if (context.no_fly === true || noFlyZoneNames.length) hardConstraints.push('active_no_fly_zone')
-  if (staticRisk.suitability < finiteNumber(thresholds.minSuitability, 0.2)) {
-    hardConstraints.push('static_suitability_below_minimum')
+  if (cell.has_building === true) hardConstraints.push('building_occupied')
+  if (
+    flightHeight != null && (
+      (minFlightHeight != null && flightHeight < minFlightHeight) ||
+      (maxFlightHeight != null && flightHeight > maxFlightHeight)
+    )
+  ) {
+    hardConstraints.push('flight_height_out_of_range')
   }
+  if (context.no_fly === true || noFlyZoneNames.length) hardConstraints.push('active_no_fly_zone')
   if (weatherRisk.isFresh && weatherRisk.windSpeed >= finiteNumber(thresholds.maxWindSpeed, 15)) {
     hardConstraints.push('wind_speed_exceeds_limit')
   }
@@ -276,6 +330,7 @@ function calculateCellCost(cell, context = {}, options = {}) {
   }
   if (context.construction_blocked === true) hardConstraints.push('construction_blocked')
   if (periodicRisk.accessClosed) hardConstraints.push('periodic_access_closed')
+  if (context.grid_data_missing === true) hardConstraints.push('grid_data_missing')
   if (context.force_blocked === true) hardConstraints.push(context.block_reason || 'manually_blocked')
 
   const components = {
@@ -320,10 +375,36 @@ function calculateCellCost(cell, context = {}, options = {}) {
         + energyRisk * model.weights.energy
       ) / realtimeWeight
     : 0
+  const breakdown = Object.fromEntries(
+    Object.entries(components).map(([name, value]) => [
+      name,
+      {
+        normalized_risk: round(value),
+        weight: round(model.weights[name]),
+        contribution: contributions[name],
+      },
+    ])
+  )
+  breakdown.population = {
+    ...breakdown.population,
+    source: periodicRisk.source,
+    raw_value: round(periodicRisk.rawPopulation, 2),
+    effective_value: round(periodicRisk.effectivePopulation, 2),
+    reference_value: round(periodicRisk.reference, 2),
+    normalization: periodicRisk.normalization,
+    base_normalized_risk: round(periodicRisk.populationRisk),
+    requested_weekday: periodicRisk.requestedWeekday,
+    requested_hour: periodicRisk.requestedHour,
+    sample_weekday: periodicRisk.sampleWeekday,
+    sample_hour: periodicRisk.sampleHour,
+    time_match: periodicRisk.timeMatch,
+  }
   return {
     passable,
     suitability_score: round(suitabilityScore),
-    traversal_cost: passable ? round(1 + model.riskScale * weightedRisk) : null,
+    traversal_cost: passable
+      ? round(model.distanceWeight + model.riskScale * weightedRisk)
+      : null,
     weighted_risk: round(weightedRisk),
     profile: model.profile,
     hard_constraints: hardConstraints,
@@ -366,7 +447,18 @@ function calculateCellCost(cell, context = {}, options = {}) {
       sensitivity: round(staticRisk.sensitivity),
       privacy: round(staticRisk.privacy),
       population: round(periodicRisk.effectivePopulation, 2),
+      population_raw: round(periodicRisk.rawPopulation, 2),
+      population_reference: round(periodicRisk.reference, 2),
+      population_normalization: periodicRisk.normalization,
       population_source: periodicRisk.source,
+      population_requested_weekday: periodicRisk.requestedWeekday,
+      population_requested_hour: periodicRisk.requestedHour,
+      population_sample_weekday: periodicRisk.sampleWeekday,
+      population_sample_hour: periodicRisk.sampleHour,
+      population_time_match: periodicRisk.timeMatch,
+      flight_height: round(flightHeight, 2),
+      min_flight_height: round(minFlightHeight, 2),
+      max_flight_height: round(maxFlightHeight, 2),
       is_holiday: periodicRisk.isHoliday,
       class_period_active: periodicRisk.classPeriodApplied,
       class_period_no: periodicRisk.classPeriodNo,
@@ -395,16 +487,7 @@ function calculateCellCost(cell, context = {}, options = {}) {
       consumption_risk: round(periodicRisk.consumptionRisk),
       access_risk: periodicRisk.accessClosed ? 1 : 0,
     },
-    breakdown: Object.fromEntries(
-      Object.entries(components).map(([name, value]) => [
-        name,
-        {
-          normalized_risk: round(value),
-          weight: round(model.weights[name]),
-          contribution: contributions[name],
-        },
-      ])
-    ),
+    breakdown,
   }
 }
 

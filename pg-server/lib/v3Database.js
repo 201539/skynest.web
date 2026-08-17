@@ -468,6 +468,10 @@ async function listDynamicCostInputs(options = {}) {
         g.sensitivity_level, g.privacy_level,
         g.static_suitability_score, g.building_evaluation_score,
         population.pop_value AS population_value,
+        p.weekday AS population_requested_weekday,
+        p.hour AS population_requested_hour,
+        population.weekday AS population_sample_weekday,
+        population.hour AS population_sample_hour,
         COALESCE(holiday.is_holiday, false) AS is_holiday,
         weather.recorded_at AS weather_recorded_at,
         weather.age_seconds AS weather_age_seconds,
@@ -478,7 +482,7 @@ async function listDynamicCostInputs(options = {}) {
       FROM static.grid_3d g
       CROSS JOIN planning p
       LEFT JOIN LATERAL (
-        SELECT pp.pop_value
+        SELECT pp.pop_value, pp.weekday, pp.hour
         FROM periodic.population pp
         WHERE pp.grid_code = g.grid_code
           AND pp.weekday = p.weekday
@@ -629,6 +633,10 @@ async function getDynamicCostSurface(options = {}) {
         g.sensitivity_level, g.privacy_level,
         g.static_suitability_score, g.building_evaluation_score,
         population.pop_value AS population_value,
+        p.weekday AS population_requested_weekday,
+        p.hour AS population_requested_hour,
+        population.weekday AS population_sample_weekday,
+        population.hour AS population_sample_hour,
         COALESCE(holiday.is_holiday, false) AS is_holiday,
         weather.recorded_at AS weather_recorded_at,
         weather.age_seconds AS weather_age_seconds,
@@ -639,7 +647,7 @@ async function getDynamicCostSurface(options = {}) {
       FROM sampled_grids g
       CROSS JOIN planning p
       LEFT JOIN LATERAL (
-        SELECT pp.pop_value
+        SELECT pp.pop_value, pp.weekday, pp.hour
         FROM periodic.population pp
         WHERE pp.grid_code = g.grid_code
           AND pp.weekday = p.weekday

@@ -23,9 +23,9 @@
   },
   "droneModel": {
     "url": "./Models/parrot_camo_drone.glb",
-    "minimumPixelSize": 32,
-    "scale": 2,
-    "maximumScale": 120,
+    "minimumPixelSize": 24,
+    "scale": 1.5,
+    "maximumScale": 90,
     "headingOffset": 90
   },
   "terrain": {

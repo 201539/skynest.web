@@ -100,6 +100,7 @@
             </div>
             <p>风险提示：{{ selectedItem.route.main_risk_factors?.map(riskFactorLabel).join('、') || '暂无明显风险' }}</p>
             <RouteExplanationCard :explanation="selectedItem.route.explanation" />
+            <RouteDecisionTraceCard :route="selectedItem.route" />
           </template>
           <p v-else class="muted">航点链暂未生成，请联系路径规划模块。</p>
         </div>
@@ -168,6 +169,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { DRONE_STATUS, NODE_AVAILABILITY, TASK_STATUS } from '../domain/contracts'
 import { demoApi } from '../services/demoApi'
+import RouteDecisionTraceCard from './RouteDecisionTraceCard.vue'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 import TaskAgentAnalysisCard from './TaskAgentAnalysisCard.vue'
 

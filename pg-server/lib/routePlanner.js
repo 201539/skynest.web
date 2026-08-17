@@ -63,80 +63,409 @@ function idx(c, r, cols) {
   return r * cols + c
 }
 
-function astar(passable, costs, cols, rows, startIdx, endIdx) {
-  const total = cols * rows
-  const gScore = new Float64Array(total).fill(Infinity)
-  const fScore = new Float64Array(total).fill(Infinity)
-  const cameFrom = new Int32Array(total).fill(-1)
-  const closed = new Uint8Array(total)
+const MOVE_DIRECTIONS = Object.freeze([
+  Object.freeze({ dc: 1, dr: 0 }),
+  Object.freeze({ dc: 1, dr: 1 }),
+  Object.freeze({ dc: 0, dr: 1 }),
+  Object.freeze({ dc: -1, dr: 1 }),
+  Object.freeze({ dc: -1, dr: 0 }),
+  Object.freeze({ dc: -1, dr: -1 }),
+  Object.freeze({ dc: 0, dr: -1 }),
+  Object.freeze({ dc: 1, dr: -1 }),
+])
+const NO_MOVE_DIRECTION = MOVE_DIRECTIONS.length
+const DIRECTION_STATE_COUNT = MOVE_DIRECTIONS.length + 1
+const TURN_EQUIVALENT_METERS_PER_45_DEGREES = 10
+
+function turnAngleDegrees(fromDirection, toDirection) {
+  if (
+    fromDirection === NO_MOVE_DIRECTION
+    || fromDirection == null
+    || toDirection == null
+    || fromDirection === toDirection
+  ) return 0
+  const directionDelta = Math.abs(fromDirection - toDirection)
+  return Math.min(directionDelta, MOVE_DIRECTIONS.length - directionDelta) * 45
+}
+
+function turnEquivalentMeters(fromDirection, toDirection) {
+  return (turnAngleDegrees(fromDirection, toDirection) / 45)
+    * TURN_EQUIVALENT_METERS_PER_45_DEGREES
+}
+
+function directionBetweenNodes(fromIndex, toIndex, cols) {
+  const fromCol = fromIndex % cols
+  const fromRow = Math.floor(fromIndex / cols)
+  const toCol = toIndex % cols
+  const toRow = Math.floor(toIndex / cols)
+  const dc = Math.sign(toCol - fromCol)
+  const dr = Math.sign(toRow - fromRow)
+  return MOVE_DIRECTIONS.findIndex((direction) => direction.dc === dc && direction.dr === dr)
+}
+
+function summarizePathManeuvers(pathNodes, cols) {
+  let turnCount = 0
+  let totalTurnAngleDegrees = 0
+  for (let pathIndex = 2; pathIndex < pathNodes.length; pathIndex++) {
+    const previousDirection = directionBetweenNodes(pathNodes[pathIndex - 2], pathNodes[pathIndex - 1], cols)
+    const currentDirection = directionBetweenNodes(pathNodes[pathIndex - 1], pathNodes[pathIndex], cols)
+    const angle = turnAngleDegrees(previousDirection, currentDirection)
+    if (angle <= 0) continue
+    turnCount++
+    totalTurnAngleDegrees += angle
+  }
+  return {
+    turnCount,
+    totalTurnAngleDegrees,
+    turnEquivalentMeters: (totalTurnAngleDegrees / 45)
+      * TURN_EQUIVALENT_METERS_PER_45_DEGREES,
+    climbMeters: 0,
+    descentMeters: 0,
+    climbCost: 0,
+    descentCost: 0,
+  }
+}
+
+function gridStepDistanceMeters(fromIndex, toIndex, bbox, cols, rows) {
+  const from = nodeToLngLat(fromIndex, bbox, cols, rows)
+  const to = nodeToLngLat(toIndex, bbox, cols, rows)
+  return haversineMeters(from.lng, from.lat, to.lng, to.lat)
+}
+
+function astar(passable, costs, cols, rows, startIdx, endIdx, bbox, maneuverWeight = 0) {
+  const totalNodes = cols * rows
+  const totalStates = totalNodes * DIRECTION_STATE_COUNT
+  const gScore = new Float64Array(totalStates).fill(Infinity)
+  const fScore = new Float64Array(totalStates).fill(Infinity)
+  const cameFrom = new Int32Array(totalStates).fill(-1)
+  const closed = new Uint8Array(totalStates)
+  let minimumTraversalCost = Infinity
+  for (let nodeIndex = 0; nodeIndex < totalNodes; nodeIndex++) {
+    if (passable[nodeIndex] && Number.isFinite(costs[nodeIndex])) {
+      minimumTraversalCost = Math.min(minimumTraversalCost, Math.max(costs[nodeIndex], 0))
+    }
+  }
+  if (!Number.isFinite(minimumTraversalCost)) minimumTraversalCost = 0
+  const endPoint = nodeToLngLat(endIdx, bbox, cols, rows)
+  const heuristic = (nodeIndex) => {
+    const point = nodeToLngLat(nodeIndex, bbox, cols, rows)
+    return haversineMeters(point.lng, point.lat, endPoint.lng, endPoint.lat)
+      * minimumTraversalCost
+  }
 
   const open = []
-  const pushOpen = (i) => {
+  const pushOpen = (stateIndex) => {
     let lo = 0
     let hi = open.length
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      if (fScore[open[mid]] < fScore[i]) lo = mid + 1
+      if (fScore[open[mid]] < fScore[stateIndex]) lo = mid + 1
       else hi = mid
     }
-    open.splice(lo, 0, i)
+    open.splice(lo, 0, stateIndex)
   }
 
-  gScore[startIdx] = 0
-  fScore[startIdx] = 0
-  pushOpen(startIdx)
-
-  const neighbors = [
-    [1, 0, 1],
-    [-1, 0, 1],
-    [0, 1, 1],
-    [0, -1, 1],
-    [1, 1, 1.414],
-    [1, -1, 1.414],
-    [-1, 1, 1.414],
-    [-1, -1, 1.414],
-  ]
-
-  const endC = endIdx % cols
-  const endR = Math.floor(endIdx / cols)
+  const startState = startIdx * DIRECTION_STATE_COUNT + NO_MOVE_DIRECTION
+  gScore[startState] = 0
+  fScore[startState] = heuristic(startIdx)
+  pushOpen(startState)
 
   while (open.length) {
-    const current = open.shift()
-    if (current === endIdx) {
+    const currentState = open.shift()
+    const currentNode = Math.floor(currentState / DIRECTION_STATE_COUNT)
+    const incomingDirection = currentState % DIRECTION_STATE_COUNT
+    if (currentNode === endIdx) {
       const path = []
-      let cur = current
-      while (cur !== -1) {
-        path.push(cur)
-        cur = cameFrom[cur]
+      let currentPathState = currentState
+      while (currentPathState !== -1) {
+        path.push(Math.floor(currentPathState / DIRECTION_STATE_COUNT))
+        currentPathState = cameFrom[currentPathState]
       }
       return path.reverse()
     }
-    if (closed[current]) continue
-    closed[current] = 1
+    if (closed[currentState]) continue
+    closed[currentState] = 1
 
-    const c = current % cols
-    const r = Math.floor(current / cols)
+    const c = currentNode % cols
+    const r = Math.floor(currentNode / cols)
 
-    for (const [dc, dr, stepCost] of neighbors) {
+    for (let directionIndex = 0; directionIndex < MOVE_DIRECTIONS.length; directionIndex++) {
+      const { dc, dr } = MOVE_DIRECTIONS[directionIndex]
       const nc = c + dc
       const nr = r + dr
       if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) continue
-      const ni = idx(nc, nr, cols)
-      if (!passable[ni] || closed[ni]) continue
+      const neighborNode = idx(nc, nr, cols)
+      if (!passable[neighborNode]) continue
+      if (dc !== 0 && dr !== 0) {
+        const horizontalSideNode = idx(nc, r, cols)
+        const verticalSideNode = idx(c, nr, cols)
+        if (!passable[horizontalSideNode] || !passable[verticalSideNode]) continue
+      }
+      const neighborState = neighborNode * DIRECTION_STATE_COUNT + directionIndex
+      if (closed[neighborState]) continue
 
-      const tentative = gScore[current] + costs[ni] * stepCost
-      if (tentative >= gScore[ni]) continue
+      const stepDistanceMeters = gridStepDistanceMeters(
+        currentNode,
+        neighborNode,
+        bbox,
+        cols,
+        rows
+      )
+      const maneuverCost = maneuverWeight * turnEquivalentMeters(incomingDirection, directionIndex)
+      const tentative = gScore[currentState]
+        + costs[neighborNode] * stepDistanceMeters
+        + maneuverCost
+      if (tentative >= gScore[neighborState]) continue
 
-      cameFrom[ni] = current
-      gScore[ni] = tentative
-      fScore[ni] = tentative + Math.hypot(nc - endC, nr - endR)
-      const existingOpenIndex = open.indexOf(ni)
+      cameFrom[neighborState] = currentState
+      gScore[neighborState] = tentative
+      fScore[neighborState] = tentative + heuristic(neighborNode)
+      const existingOpenIndex = open.indexOf(neighborState)
       if (existingOpenIndex >= 0) open.splice(existingOpenIndex, 1)
-      pushOpen(ni)
+      pushOpen(neighborState)
     }
   }
 
   return null
+}
+
+const COST_COMPONENT_LABELS = Object.freeze({
+  static: '静态环境',
+  population: '周期人流',
+  weather: '天气',
+  runtime: '实时事件',
+  energy: '能耗',
+})
+
+function roundCost(value, digits = 4) {
+  if (!Number.isFinite(value)) return null
+  const scale = 10 ** digits
+  return Math.round(value * scale) / scale
+}
+
+function buildRouteDecisionTrace({
+  pathNodes,
+  resultByNode,
+  cellByNode,
+  cols,
+  rows,
+  bbox,
+  intraCellDistanceMeters,
+  model,
+  totalTraversalCost,
+  summary,
+  dataCoverage,
+  sampledAt,
+  timeZone,
+  flightHeight,
+}) {
+  const componentNames = Object.keys(COST_COMPONENT_LABELS)
+  const maneuverSummary = summarizePathManeuvers(pathNodes, cols)
+  const accumulators = Object.fromEntries(componentNames.map((name) => [name, {
+    weightedRisk: 0,
+    normalizedRisk: 0,
+    rawCost: 0,
+  }]))
+  let stepDistanceUnits = 0
+  let distanceMeters = 0
+  let highestRiskCell = null
+
+  for (let pathIndex = 1; pathIndex < pathNodes.length; pathIndex++) {
+    const previousNode = pathNodes[pathIndex - 1]
+    const currentNode = pathNodes[pathIndex]
+    const previousCol = previousNode % cols
+    const previousRow = Math.floor(previousNode / cols)
+    const currentCol = currentNode % cols
+    const currentRow = Math.floor(currentNode / cols)
+    const stepMultiplier = Math.hypot(currentCol - previousCol, currentRow - previousRow)
+    const stepDistanceMeters = gridStepDistanceMeters(
+      previousNode,
+      currentNode,
+      bbox,
+      cols,
+      rows
+    )
+    const cellCost = resultByNode[currentNode]
+    stepDistanceUnits += stepMultiplier
+    distanceMeters += stepDistanceMeters
+
+    for (const name of componentNames) {
+      const breakdown = cellCost?.breakdown?.[name]
+      const contribution = Number(breakdown?.contribution) || 0
+      const normalizedRisk = Number(breakdown?.normalized_risk) || 0
+      accumulators[name].weightedRisk += contribution * stepDistanceMeters
+      accumulators[name].normalizedRisk += normalizedRisk * stepDistanceMeters
+      accumulators[name].rawCost += model.riskScale * contribution * stepDistanceMeters
+    }
+
+    if (!highestRiskCell || Number(cellCost?.weighted_risk) > highestRiskCell.weighted_risk) {
+      highestRiskCell = {
+        grid_code: cellByNode[currentNode]?.grid_code || null,
+        weighted_risk: Number(cellCost?.weighted_risk) || 0,
+        suitability_score: Number(cellCost?.suitability_score) || 0,
+        traversal_cost: Number(cellCost?.traversal_cost) || 0,
+      }
+    }
+  }
+
+  if (pathNodes.length === 1 && intraCellDistanceMeters > 0) {
+    const currentNode = pathNodes[0]
+    const cellCost = resultByNode[currentNode]
+    distanceMeters += intraCellDistanceMeters
+
+    for (const name of componentNames) {
+      const breakdown = cellCost?.breakdown?.[name]
+      const contribution = Number(breakdown?.contribution) || 0
+      const normalizedRisk = Number(breakdown?.normalized_risk) || 0
+      accumulators[name].weightedRisk += contribution * intraCellDistanceMeters
+      accumulators[name].normalizedRisk += normalizedRisk * intraCellDistanceMeters
+      accumulators[name].rawCost += model.riskScale * contribution * intraCellDistanceMeters
+    }
+
+    highestRiskCell = {
+      grid_code: cellByNode[currentNode]?.grid_code || null,
+      weighted_risk: Number(cellCost?.weighted_risk) || 0,
+      suitability_score: Number(cellCost?.suitability_score) || 0,
+      traversal_cost: Number(cellCost?.traversal_cost) || 0,
+    }
+  }
+
+  const roundedTotalTraversalCost = roundCost(totalTraversalCost)
+  const distanceCost = roundCost(distanceMeters * model.distanceWeight)
+  const maneuverCost = roundCost(
+    maneuverSummary.turnEquivalentMeters * model.maneuverWeight
+  )
+  const riskCost = roundCost(Math.max(
+    0,
+    totalTraversalCost
+      - distanceMeters * model.distanceWeight
+      - maneuverSummary.turnEquivalentMeters * model.maneuverWeight
+  ))
+  const rawRiskCost = componentNames.reduce((sum, name) => sum + accumulators[name].rawCost, 0)
+  const contributionScale = rawRiskCost > 0 ? riskCost / rawRiskCost : 0
+  const components = Object.fromEntries(componentNames.map((name) => {
+    const accumulator = accumulators[name]
+    const costContribution = accumulator.rawCost * contributionScale
+    return [name, {
+      label: COST_COMPONENT_LABELS[name],
+      weight: roundCost(model.weights[name], 6),
+      average_normalized_risk: distanceMeters > 0
+        ? roundCost(accumulator.normalizedRisk / distanceMeters, 6)
+        : 0,
+      average_weighted_contribution: distanceMeters > 0
+        ? roundCost(accumulator.weightedRisk / distanceMeters, 6)
+        : 0,
+      cost_contribution: roundCost(costContribution),
+      share_of_risk_cost: riskCost > 0 ? roundCost(costContribution / riskCost, 6) : 0,
+    }]
+  }))
+  const layers = {
+    static: {
+      label: '静态层',
+      cost_contribution: components.static.cost_contribution,
+    },
+    periodic: {
+      label: '周期层',
+      cost_contribution: components.population.cost_contribution,
+    },
+    realtime: {
+      label: '实时层',
+      cost_contribution: roundCost(
+        components.weather.cost_contribution
+        + components.runtime.cost_contribution
+        + components.energy.cost_contribution
+      ),
+    },
+  }
+  const primaryCandidate = componentNames.reduce((best, name) => (
+    !best || components[name].cost_contribution > components[best].cost_contribution ? name : best
+  ), null)
+  const primaryComponent = primaryCandidate && components[primaryCandidate].cost_contribution > 0
+    ? primaryCandidate
+    : null
+  const primaryLabel = primaryComponent ? COST_COMPONENT_LABELS[primaryComponent] : null
+  const riskContributionSummary = primaryLabel
+    ? `主要风险 Cost 贡献来自${primaryLabel}`
+    : '本航线没有产生额外风险 Cost'
+  const pathBreakdown = {
+    total_traversal_cost: roundedTotalTraversalCost,
+    base_distance_cost: distanceCost,
+    risk_cost: riskCost,
+    maneuver_cost: maneuverCost,
+    risk_scale: roundCost(model.riskScale, 6),
+    step_distance_units: roundCost(stepDistanceUnits),
+    distance_meters: roundCost(distanceMeters),
+    distance: {
+      label: '航程距离',
+      raw_distance_meters: roundCost(distanceMeters),
+      weight: roundCost(model.distanceWeight, 6),
+      cost_contribution: distanceCost,
+      unit: 'm',
+    },
+    maneuver: {
+      label: '飞行机动',
+      turn_count: maneuverSummary.turnCount,
+      total_turn_angle_degrees: maneuverSummary.totalTurnAngleDegrees,
+      turn_equivalent_meters: maneuverSummary.turnEquivalentMeters,
+      weight: roundCost(model.maneuverWeight, 6),
+      cost_contribution: maneuverCost,
+      climb_meters: maneuverSummary.climbMeters,
+      descent_meters: maneuverSummary.descentMeters,
+      climb_cost: maneuverSummary.climbCost,
+      descent_cost: maneuverSummary.descentCost,
+      unit: 'equivalent_m',
+    },
+    path_cell_count: Math.max(pathNodes.length - 1, 0),
+    average_weighted_risk: distanceMeters > 0 && model.riskScale > 0
+      ? roundCost(riskCost / model.riskScale / distanceMeters, 6)
+      : 0,
+    components,
+    layers,
+    highest_risk_cell: highestRiskCell
+      ? Object.fromEntries(Object.entries(highestRiskCell).map(([key, value]) => [
+          key,
+          typeof value === 'number' ? roundCost(value, 6) : value,
+        ]))
+      : null,
+  }
+  const decisionTrace = {
+    version: 'route-decision-v1',
+    objective: 'minimum_total_traversal_cost',
+    algorithm: 'A*',
+    cost_model: 'dynamic-v1',
+    formula: 'edge_cost = distance_meters × (distanceWeight + riskScale × Σ(normalized_risk × weight)) + maneuverWeight × turn_equivalent_meters',
+    model: {
+      profile: model.profile,
+      distance_weight: roundCost(model.distanceWeight, 6),
+      maneuver_weight: roundCost(model.maneuverWeight, 6),
+      risk_scale: roundCost(model.riskScale, 6),
+      weights: { ...model.weights },
+    },
+    path_cost: pathBreakdown,
+    constraints: {
+      blocked_cells: summary.blocked,
+      blocked_reasons: summary.blocked_reasons,
+      flight_height: {
+        planned: roundCost(flightHeight, 2),
+        minimum: roundCost(model.thresholds.minFlightHeight, 2),
+        maximum: roundCost(model.thresholds.maxFlightHeight, 2),
+        unit: 'm',
+      },
+    },
+    data: {
+      sampled_at: sampledAt,
+      time_zone: timeZone,
+      data_coverage: dataCoverage,
+      weather_data: summary.weather_data,
+    },
+    selection_reason: {
+      code: 'minimum_total_traversal_cost',
+      primary_cost_factor: primaryComponent,
+      summary: `在本次搜索格网、权重和硬约束下，A* 选择了累计通行 Cost 最低的可达路径；${riskContributionSummary}。`,
+    },
+  }
+
+  return { pathBreakdown, decisionTrace }
 }
 
 function snapToNode(lng, lat, bbox, cols, rows) {
@@ -178,25 +507,40 @@ function nodeToLngLat(nodeIndex, bbox, cols, rows) {
   }
 }
 
-function simplifyPath(points, toleranceMeters = 25) {
+function simplifyPath(points, toleranceMeters = 25, pathNodes, cols) {
   if (points.length <= 2) return points
-  const result = [points[0]]
+  if (!Array.isArray(pathNodes) || pathNodes.length !== points.length || !Number.isInteger(cols)) {
+    return points
+  }
+
+  const requiredIndices = new Set([0, 1, points.length - 2, points.length - 1])
   for (let i = 1; i < points.length - 1; i++) {
-    const prev = result[result.length - 1]
+    const incomingDirection = directionBetweenNodes(pathNodes[i - 1], pathNodes[i], cols)
+    const outgoingDirection = directionBetweenNodes(pathNodes[i], pathNodes[i + 1], cols)
+    if (incomingDirection !== outgoingDirection) requiredIndices.add(i)
+  }
+
+  const keptIndices = [0]
+  for (let i = 1; i < points.length - 1; i++) {
+    const previousKeptPoint = points[keptIndices[keptIndices.length - 1]]
     const cur = points[i]
-    const dist = haversineMeters(prev.lng, prev.lat, cur.lng, cur.lat)
-    if (dist >= toleranceMeters) result.push(cur)
+    const dist = haversineMeters(
+      previousKeptPoint.lng,
+      previousKeptPoint.lat,
+      cur.lng,
+      cur.lat
+    )
+    if (requiredIndices.has(i) || dist >= toleranceMeters) keptIndices.push(i)
   }
-  result.push(points[points.length - 1])
+  keptIndices.push(points.length - 1)
   // 保留足够航点以呈现 A* 转折，避免被简化成直线
-  if (result.length < 6 && points.length >= 6) {
+  if (keptIndices.length < 6 && points.length >= 6) {
     const step = Math.max(1, Math.floor((points.length - 2) / 4))
-    const dense = [points[0]]
-    for (let i = step; i < points.length - 1; i += step) dense.push(points[i])
-    dense.push(points[points.length - 1])
-    return dense
+    for (let i = step; i < points.length - 1; i += step) keptIndices.push(i)
   }
-  return result
+  return [...new Set(keptIndices)]
+    .sort((left, right) => left - right)
+    .map((pointIndex) => points[pointIndex])
 }
 
 function straightLinePath(start, end, segments = 10) {
@@ -227,6 +571,17 @@ async function fetchGridsInBbox(pool, bbox, zMin, zMax, limit = 15000) {
     [bbox.xMin, bbox.xMax, bbox.yMin, bbox.yMax, zMin, zMax, limit]
   )
   return result.rows
+}
+
+function createStaticNoSafeRouteError(searchBBox, details = {}) {
+  const error = new Error('未找到满足当前静态约束的安全航线')
+  error.code = 'NO_SAFE_ROUTE'
+  error.details = {
+    cost_model: 'static-v1',
+    search_bbox: searchBBox,
+    ...details,
+  }
+  return error
 }
 
 async function planStaticRoute(pool, start, end, options = {}, generateDemoGrids) {
@@ -273,19 +628,23 @@ async function planStaticRoute(pool, start, end, options = {}, generateDemoGrids
 
   const startSnap = snapToNode(start.lng, start.lat, searchBBox, cols, rows)
   const endSnap = snapToNode(end.lng, end.lat, searchBBox, cols, rows)
+  if (!passable[startSnap.idx] || !passable[endSnap.idx]) {
+    throw createStaticNoSafeRouteError(searchBBox, {
+      endpoint: !passable[startSnap.idx] ? 'start' : 'end',
+    })
+  }
   const startNode = findNearestPassable(passable, cols, rows, startSnap.c, startSnap.r)
   const endNode = findNearestPassable(passable, cols, rows, endSnap.c, endSnap.r)
-
-  let pathNodes = astar(passable, costs, cols, rows, startNode, endNode)
-  let fallbackUsed = false
-
-  if (!pathNodes || pathNodes.length < 2) {
-    pathNodes = null
-    fallbackUsed = true
-  }
+  const pathNodes = astar(passable, costs, cols, rows, startNode, endNode, searchBBox)
+  if (!pathNodes) throw createStaticNoSafeRouteError(searchBBox)
 
   let points
-  if (pathNodes) {
+  if (pathNodes.length === 1) {
+    points = [
+      { lng: start.lng, lat: start.lat, height: start.height ?? flightHeight },
+      { lng: end.lng, lat: end.lat, height: end.height ?? flightHeight },
+    ]
+  } else {
     points = pathNodes.map((node) => {
       const { lng, lat } = nodeToLngLat(node, searchBBox, cols, rows)
       return { lng, lat, height: flightHeight }
@@ -293,13 +652,7 @@ async function planStaticRoute(pool, start, end, options = {}, generateDemoGrids
     points[0] = { lng: start.lng, lat: start.lat, height: start.height ?? flightHeight }
     points[points.length - 1] = { lng: end.lng, lat: end.lat, height: end.height ?? flightHeight }
     const simplifyTol = options.simplifyToleranceMeters ?? 8
-    points = simplifyPath(points, simplifyTol)
-  } else {
-    points = straightLinePath(
-      { lng: start.lng, lat: start.lat, height: start.height ?? flightHeight },
-      { lng: end.lng, lat: end.lat, height: end.height ?? flightHeight },
-      12
-    )
+    points = simplifyPath(points, simplifyTol, pathNodes, cols)
   }
 
   let totalLength = 0
@@ -317,18 +670,16 @@ async function planStaticRoute(pool, start, end, options = {}, generateDemoGrids
   return {
     searchBBox,
     demo,
-    fallbackUsed,
-    algorithm: fallbackUsed ? 'straight-line-fallback' : 'A*',
+    fallbackUsed: false,
+    algorithm: 'A*',
     gridSize: { cols, rows },
     gridCount: grids.length,
-    nodeCount: pathNodes ? pathNodes.length : points.length,
+    nodeCount: pathNodes.length,
     totalLengthMeters: Math.round(totalLength),
     route: {
       id: `planned-${Date.now()}`,
       name: options.routeName || '智能规划航线',
-      description: fallbackUsed
-        ? '局部格网未找到可行路径，已使用直线备选航线'
-        : '基于适航格网 A* 局部搜索生成',
+      description: '基于适航格网 A* 局部搜索生成',
       duration,
       points,
       planned: true,
@@ -385,36 +736,21 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
       throw new Error('Dynamic Cost surface is incomplete')
     }
   } catch (error) {
-    if (options.requireDynamicCost) throw error
-    const staticPlan = await planStaticRoute(pool, start, end, options, generateDemoGrids)
-    return {
-      ...staticPlan,
-      costModel: 'static-v1',
-      dynamicCost: {
-        enabled: false,
-        source: null,
-        sampledAt: null,
-        timeZone: options.timeZone || null,
-        model: null,
-        summary: null,
-        fallbackReason: error.message,
-      },
-      route: {
-        ...staticPlan.route,
-        costModel: 'static-v1',
-      },
-    }
+    throw error
   }
 
   const costCells = surface.cells.map((cell) => ({
     ...cell,
+    flight_height: flightHeight,
     grid_data_missing: cell.new_id == null,
   }))
   const costOptions = options.dynamicCostOptions || {}
+  const model = dynamicCost.getModelConfig(costOptions)
   const costResults = dynamicCost.evaluateCells(costCells, costOptions)
   const passable = new Array(cols * rows).fill(false)
   const costs = new Array(cols * rows).fill(Infinity)
   const resultByNode = new Array(cols * rows)
+  const cellByNode = new Array(cols * rows)
 
   for (let surfaceIndex = 0; surfaceIndex < costCells.length; surfaceIndex++) {
     const cell = costCells[surfaceIndex]
@@ -423,6 +759,7 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
     passable[nodeIndex] = result.passable
     costs[nodeIndex] = result.passable ? result.traversal_cost : Infinity
     resultByNode[nodeIndex] = result
+    cellByNode[nodeIndex] = cell
   }
 
   const startSnap = snapToNode(start.lng, start.lat, searchBBox, cols, rows)
@@ -441,7 +778,16 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
   }
   const startNode = findNearestPassable(passable, cols, rows, startSnap.c, startSnap.r)
   const endNode = findNearestPassable(passable, cols, rows, endSnap.c, endSnap.r)
-  const pathNodes = astar(passable, costs, cols, rows, startNode, endNode)
+  const pathNodes = astar(
+    passable,
+    costs,
+    cols,
+    rows,
+    startNode,
+    endNode,
+    searchBBox,
+    model.maneuverWeight
+  )
 
   if (!pathNodes?.length) {
     const error = new Error('未找到满足当前动态约束的安全航线')
@@ -470,7 +816,7 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
       lat: end.lat,
       height: end.height ?? flightHeight,
     }
-    points = simplifyPath(points, options.simplifyToleranceMeters ?? 8)
+    points = simplifyPath(points, options.simplifyToleranceMeters ?? 8, pathNodes, cols)
   }
 
   let totalLength = 0
@@ -484,26 +830,54 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
   }
 
   const summary = dynamicCost.summarizeCosts(costResults)
-  const model = dynamicCost.getModelConfig(costOptions)
   const coveredGridCount = surface.cells.filter((cell) => cell.new_id != null).length
   const duration = Math.max(25, Math.min(120, Math.round(totalLength / 25)))
+  const intraCellDistanceMeters = pathNodes.length === 1 ? totalLength : 0
   let totalTraversalCost = 0
   for (let pathIndex = 1; pathIndex < pathNodes.length; pathIndex++) {
     const previousNode = pathNodes[pathIndex - 1]
     const currentNode = pathNodes[pathIndex]
-    const previousCol = previousNode % cols
-    const previousRow = Math.floor(previousNode / cols)
-    const currentCol = currentNode % cols
-    const currentRow = Math.floor(currentNode / cols)
-    const stepMultiplier = Math.hypot(currentCol - previousCol, currentRow - previousRow)
-    totalTraversalCost += costs[currentNode] * stepMultiplier
+    const stepDistanceMeters = gridStepDistanceMeters(
+      previousNode,
+      currentNode,
+      searchBBox,
+      cols,
+      rows
+    )
+    totalTraversalCost += costs[currentNode] * stepDistanceMeters
   }
+  if (intraCellDistanceMeters > 0) {
+    totalTraversalCost += costs[pathNodes[0]] * intraCellDistanceMeters
+  }
+  const maneuverSummary = summarizePathManeuvers(pathNodes, cols)
+  totalTraversalCost += maneuverSummary.turnEquivalentMeters * model.maneuverWeight
   const pathRiskFactors = [...new Set(
     pathNodes.flatMap((node) => resultByNode[node]?.risk_factors || [])
   )]
   const avoidedZones = [...new Set(
     costResults.flatMap((result) => result.active_context?.no_fly_zones || [])
   )]
+  const dataCoverage = {
+    sampled: surface.cells.length,
+    matched: coveredGridCount,
+    missing: surface.cells.length - coveredGridCount,
+  }
+  const { pathBreakdown, decisionTrace } = buildRouteDecisionTrace({
+    pathNodes,
+    resultByNode,
+    cellByNode,
+    cols,
+    rows,
+    bbox: searchBBox,
+    intraCellDistanceMeters,
+    model,
+    totalTraversalCost,
+    summary,
+    dataCoverage,
+    sampledAt: surface.at,
+    timeZone: surface.timeZone,
+    flightHeight,
+  })
 
   return {
     searchBBox,
@@ -518,18 +892,16 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
       timeZone: surface.timeZone,
       model,
       summary,
+      pathBreakdown,
       fallbackReason: null,
-      dataCoverage: {
-        sampled: surface.cells.length,
-        matched: coveredGridCount,
-        missing: surface.cells.length - coveredGridCount,
-      },
+      dataCoverage,
     },
+    decisionTrace,
     gridSize: { cols, rows },
     gridCount: coveredGridCount,
     nodeCount: pathNodes.length,
     totalLengthMeters: Math.round(totalLength),
-    totalTraversalCost: Math.round(totalTraversalCost * 10000) / 10000,
+    totalTraversalCost: pathBreakdown.total_traversal_cost,
     route: {
       id: `planned-${Date.now()}`,
       name: options.routeName || '动态 Cost 智能规划航线',
@@ -539,6 +911,7 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
       planned: true,
       costModel: 'dynamic-v1',
       dynamicCostSummary: summary,
+      decisionTrace,
       mainRiskFactors: pathRiskFactors,
       avoidedZones,
       startName: options.startName,

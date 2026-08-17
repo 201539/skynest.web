@@ -51,7 +51,7 @@ async function main() {
       decision: 'approved',
       reason: '审计链路自测批准',
       reviewer: { name: '自动审核员', department: '项目组' },
-    }, { client })
+    }, { client, planningAt: '2026-08-11T12:00:00+08:00' })
 
     const operatorWorkspace = await operatorWorkflowStore.getOperatorWorkspace({ client })
     const drone = operatorWorkspace.drones.find((item) => (

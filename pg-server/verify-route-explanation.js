@@ -76,7 +76,7 @@ async function main() {
       decision: 'approved',
       reason: '解释助手事务自测批准',
       reviewer: { name: '自动审核员', department: '项目组' },
-    }, { client })
+    }, { client, planningAt: '2026-08-11T12:00:00+08:00' })
     assert.ok(approved.route?.explanation)
     assert.equal(approved.route.explanation.route_id, approved.route.id)
     assert.deepEqual(

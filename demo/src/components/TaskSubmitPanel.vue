@@ -298,6 +298,7 @@
                 <i>{{ formatDuration(selectedStudentTask.route.estimated_duration_seconds) }}</i>
               </div>
               <RouteExplanationCard :explanation="selectedStudentTask.route.explanation" />
+              <RouteDecisionTraceCard :route="selectedStudentTask.route" />
             </div>
         </div>
       </template>
@@ -311,6 +312,7 @@ import { APPROVAL_DECISION, TASK_STATUS, createTransportTask, validateTransportT
 import { HIGH_RISK_CATEGORIES, TASK_ITEM_CATEGORIES } from '../domain/taskParser'
 import { demoApi } from '../services/demoApi'
 import { findExactBuilding as findExactBuildingInList } from '../utils/buildingSearch'
+import RouteDecisionTraceCard from './RouteDecisionTraceCard.vue'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 import BuildingSearchField from './BuildingSearchField.vue'
 

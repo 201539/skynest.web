@@ -107,7 +107,7 @@ async function main() {
       decision: 'approved',
       reason: '安全操作自测批准',
       reviewer: { name: '自动审核员', department: '项目组' },
-    }, { client })
+    }, { client, planningAt: '2026-08-11T12:00:00+08:00' })
     const originalWaypoints = approved.route.waypoints
     const midpoint = originalWaypoints[Math.floor(originalWaypoints.length / 2)]
     const restriction = await restrictionStore.createRestriction({

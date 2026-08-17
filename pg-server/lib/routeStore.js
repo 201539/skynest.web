@@ -87,8 +87,14 @@ function createPlanningContext(context, plan) {
     grid_size: context.gridSize,
     simplify_tolerance_meters: context.simplifyToleranceMeters ?? null,
     cost_profile: context.costProfile || 'balanced',
-    cost_weights: context.costWeights || null,
-    cost_thresholds: context.costThresholds || null,
+    cost_weights: plan.dynamicCost?.model
+      ? {
+          distance: plan.dynamicCost.model.distanceWeight,
+          maneuver: plan.dynamicCost.model.maneuverWeight,
+          ...plan.dynamicCost.model.weights,
+        }
+      : context.costWeights || null,
+    cost_thresholds: plan.dynamicCost?.model?.thresholds || context.costThresholds || null,
     time_zone: context.timeZone || 'Asia/Shanghai',
     planned_for: context.planningAt || plan.dynamicCost?.sampledAt || null,
   }
@@ -138,6 +144,8 @@ async function persistPlan(plan, context = {}, options = {}) {
       surface_summary: plan.dynamicCost?.summary || null,
       model: plan.dynamicCost?.model || null,
       data_coverage: plan.dynamicCost?.dataCoverage || null,
+      path: plan.dynamicCost?.pathBreakdown || null,
+      decision_trace: plan.decisionTrace || null,
     }
     const insertResult = await client.query(
       `
