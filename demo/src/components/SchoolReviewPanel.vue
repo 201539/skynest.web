@@ -50,21 +50,32 @@
 
     <template v-else>
       <div class="task-queue" aria-label="审核任务列表">
-        <button
+        <div
           v-for="item in filteredQueue"
           :key="item.task.id"
-          type="button"
           class="queue-item"
           :class="{ active: selectedTaskId === item.task.id }"
-          @click="selectTask(item.task.id)"
         >
-          <span class="queue-main">
-            <strong>{{ item.task.origin }} → {{ item.task.destination }}</strong>
-            <small>{{ item.task.item_category }} · {{ item.task.weight_kg }}kg</small>
-          </span>
-          <span :class="['status-badge', item.task.status]">{{ statusLabel(item.task.status) }}</span>
-        </button>
+          <button type="button" class="queue-select" @click="selectTask(item.task.id)">
+            <span class="queue-main">
+              <strong>{{ item.task.origin }} → {{ item.task.destination }}</strong>
+              <small>{{ item.task.item_category }} · {{ item.task.weight_kg }}kg</small>
+            </span>
+            <span :class="['status-badge', item.task.status]">{{ statusLabel(item.task.status) }}</span>
+          </button>
+          <button
+            type="button"
+            class="queue-delete"
+            :disabled="Boolean(deletingTaskId) || taskDeleteBlocked(item.task)"
+            :title="taskDeleteBlocked(item.task) ? '执行中或异常处置中的任务不能直接删除' : '删除任务及关联记录'"
+            :aria-label="`删除任务：${item.task.origin}到${item.task.destination}`"
+            @click="deleteTask(item)"
+          >
+            {{ deletingTaskId === item.task.id ? '删除中' : '删除' }}
+          </button>
+        </div>
       </div>
+      <div v-if="deleteError" class="action-error" role="alert">{{ deleteError }}</div>
 
       <section v-if="selectedItem" class="review-detail">
         <div class="detail-title-row">
@@ -205,14 +216,24 @@
               <button
                 type="button"
                 :class="{ active: restriction.status === RESTRICTION_STATUS.ACTIVE }"
-                :disabled="safetyOperating"
+                :disabled="safetyOperating || Boolean(deletingRestrictionId)"
                 @click="toggleRestriction(restriction)"
               >
                 {{ restriction.status === RESTRICTION_STATUS.ACTIVE ? '生效中' : '已停用' }}
               </button>
+              <button
+                type="button"
+                class="restriction-delete-btn"
+                :disabled="safetyOperating || Boolean(deletingRestrictionId)"
+                :aria-label="`删除限制区：${restriction.name}`"
+                @click="deleteRestriction(restriction)"
+              >
+                {{ deletingRestrictionId === restriction.id ? '删除中' : '删除' }}
+              </button>
             </div>
           </div>
         </div>
+        <div v-if="restrictionDeleteError" class="action-error" role="alert">{{ restrictionDeleteError }}</div>
 
         <div class="replan-card">
           <div class="safety-section-title">冲突检测与动态重规划</div>
@@ -266,6 +287,11 @@
               <select v-model="restrictionForm.preset_id">
                 <option v-for="preset in restrictionPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
               </select>
+              <small v-if="selectedRestrictionPreset" class="restriction-location-hint">
+                定位：{{ selectedRestrictionPreset.anchor_label }} ·
+                {{ selectedRestrictionPreset.center.lng.toFixed(6) }},
+                {{ selectedRestrictionPreset.center.lat.toFixed(6) }}
+              </small>
             </label>
             <label>
               <span>限制半径（m）</span>
@@ -334,6 +360,7 @@ import AgentModelStatusCard from './AgentModelStatusCard.vue'
 import RouteDecisionTraceCard from './RouteDecisionTraceCard.vue'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 import TaskAgentAnalysisCard from './TaskAgentAnalysisCard.vue'
+import { useTaskAutoRefresh } from '../composables/useTaskAutoRefresh'
 
 const emit = defineEmits(['reviewed', 'notify', 'view-route', 'safety-updated', 'view-restriction'])
 
@@ -342,11 +369,38 @@ const filterOptions = Object.freeze([
   { value: 'all', label: '全部' },
 ])
 
-const restrictionPresets = Object.freeze([
-  { id: 'stadium', label: '体育场活动区', center: { lng: 118.9479, lat: 32.1101, height: 0 } },
-  { id: 'library', label: '图书馆周边', center: { lng: 118.9492, lat: 32.1082, height: 0 } },
-  { id: 'south-gate', label: '南门入口周边', center: { lng: 118.949, lat: 32.1068, height: 0 } },
+const restrictionPresetDefinitions = Object.freeze([
+  {
+    id: 'stadium',
+    label: '体育场活动区',
+    anchor_label: '方肇周体育馆',
+    building_name: '方肇周体育馆',
+    fallback_center: { lng: 118.9510165, lat: 32.1148087, height: 0 },
+  },
+  {
+    id: 'library',
+    label: '图书馆周边',
+    anchor_label: '杜厦图书馆',
+    building_name: '杜厦图书馆',
+    fallback_center: { lng: 118.9549885, lat: 32.1163152, height: 0 },
+  },
+  {
+    id: 'south-gate',
+    label: '南门入口周边',
+    anchor_label: '南门 L1 枢纽',
+    node_code: 'hub',
+    fallback_center: { lng: 118.95674, lat: 32.11181, height: 0 },
+  },
 ])
+
+function fallbackRestrictionPresets() {
+  return restrictionPresetDefinitions.map((definition) => ({
+    ...definition,
+    center: { ...definition.fallback_center },
+  }))
+}
+
+const restrictionPresets = ref(fallbackRestrictionPresets())
 
 const queue = ref([])
 const loading = ref(false)
@@ -356,6 +410,8 @@ const actionError = ref('')
 const filter = ref('pending')
 const selectedTaskId = ref('')
 const reviewReason = ref('')
+const deletingTaskId = ref('')
+const deleteError = ref('')
 const workspaceMode = ref('review')
 const auditPanelRef = ref(null)
 const auditCount = ref(0)
@@ -371,6 +427,8 @@ const safetyLoading = ref(false)
 const safetyOperating = ref(false)
 const safetyError = ref('')
 const restrictionError = ref('')
+const deletingRestrictionId = ref('')
+const restrictionDeleteError = ref('')
 const fuseError = ref('')
 const selectedFuseTaskId = ref('')
 const fuseReason = ref('')
@@ -398,7 +456,16 @@ const accessPointPlan = computed(() => {
   const plan = selectedItem.value?.task.agent_analysis?.access_point_plan
   return plan?.departure && plan?.receiving ? plan : null
 })
+const selectedRestrictionPreset = computed(() =>
+  restrictionPresets.value.find((item) => item.id === restrictionForm.preset_id) || null
+)
 const activeRestrictions = computed(() => safetyWorkspace.value.restrictions.filter((item) => item.status === RESTRICTION_STATUS.ACTIVE))
+const taskDeleteBlockedStatuses = new Set([
+  TASK_STATUS.DISPATCHED,
+  TASK_STATUS.IN_TRANSIT,
+  TASK_STATUS.ARRIVING,
+  TASK_STATUS.EXCEPTION,
+])
 const replanningStatus = computed(() => safetyWorkspace.value.replanning_status || {})
 const replanServiceClass = computed(() => {
   if (safetyWorkspace.value.source !== 'v3') return 'mock'
@@ -462,6 +529,37 @@ function selectTask(taskId) {
   selectedTaskId.value = taskId
   reviewReason.value = ''
   actionError.value = ''
+  deleteError.value = ''
+}
+
+function taskDeleteBlocked(task) {
+  return taskDeleteBlockedStatuses.has(task?.status)
+}
+
+async function deleteTask(item) {
+  const task = item?.task
+  if (!task?.id || deletingTaskId.value || taskDeleteBlocked(task)) return
+  const confirmed = globalThis.confirm?.(
+    `确定删除“${task.origin} → ${task.destination}”吗？\n\n关联航线、审批和运营记录也会被清理，此操作不可撤销。`
+  )
+  if (!confirmed) return
+
+  deletingTaskId.value = task.id
+  deleteError.value = ''
+  try {
+    await demoApi.deleteTask(task.id)
+    queue.value = queue.value.filter((entry) => String(entry.task.id) !== String(task.id))
+    if (String(selectedTaskId.value) === String(task.id)) selectedTaskId.value = ''
+    await Promise.all([
+      loadQueue({ quiet: true }),
+      auditPanelRef.value?.refresh({ quiet: true }),
+    ])
+    emit('notify', `任务已删除：${task.origin} → ${task.destination}`)
+  } catch (error) {
+    deleteError.value = `任务删除失败：${error.message}`
+  } finally {
+    deletingTaskId.value = ''
+  }
 }
 
 function statusLabel(status) {
@@ -521,17 +619,18 @@ function formatSignedPercent(value) {
   return `${number > 0 ? '+' : ''}${number.toFixed(1)}%`
 }
 
-async function loadQueue() {
-  loading.value = true
-  loadError.value = ''
+async function loadQueue(options = {}) {
+  const quiet = options?.quiet === true
+  if (!quiet) loading.value = true
   try {
     queue.value = await demoApi.listReviewTasks()
+    loadError.value = ''
     if (!selectedTaskId.value) selectedTaskId.value = filteredQueue.value[0]?.task.id || ''
   } catch (error) {
     console.error('审核任务加载失败', error)
-    loadError.value = `审核任务加载失败：${error.message}`
+    if (!quiet || !queue.value.length) loadError.value = `审核任务加载失败：${error.message}`
   } finally {
-    loading.value = false
+    if (!quiet) loading.value = false
   }
 }
 
@@ -569,24 +668,55 @@ async function submitReview(decision) {
 
 async function loadSafetyWorkspace(options = {}) {
   if (!options.quiet) safetyLoading.value = true
-  safetyError.value = ''
   try {
     safetyWorkspace.value = normalizeSafetyWorkspace(await demoApi.getSafetyWorkspace())
+    safetyError.value = ''
     if (!safetyWorkspace.value.active_tasks.some((item) => item.task.id === selectedFuseTaskId.value)) {
       selectedFuseTaskId.value = safetyWorkspace.value.active_tasks[0]?.task.id || ''
     }
     emit('safety-updated', safetyWorkspace.value)
   } catch (error) {
     console.error('安全管控状态加载失败', error)
-    safetyError.value = `安全管控状态加载失败：${error.message}`
+    if (!options.quiet || safetyWorkspace.value.source === 'loading') {
+      safetyError.value = `安全管控状态加载失败：${error.message}`
+    }
   } finally {
     if (!options.quiet) safetyLoading.value = false
   }
 }
 
+async function loadRestrictionPresets() {
+  try {
+    const [buildings, nodes] = await Promise.all([
+      demoApi.listBuildings(),
+      demoApi.listFixedNodes(),
+    ])
+    restrictionPresets.value = restrictionPresetDefinitions.map((definition) => {
+      const source = definition.building_name
+        ? buildings.find((item) => item.building_name === definition.building_name)
+        : nodes.find((item) => item.node_code === definition.node_code)
+      const lng = Number(source?.location?.lng)
+      const lat = Number(source?.location?.lat)
+      return {
+        ...definition,
+        center: Number.isFinite(lng) && Number.isFinite(lat)
+          ? { lng, lat, height: 0 }
+          : { ...definition.fallback_center },
+      }
+    })
+  } catch (error) {
+    console.warn('正式限制区预设坐标加载失败，使用已校准的本地坐标', error)
+    restrictionPresets.value = fallbackRestrictionPresets()
+  }
+}
+
 async function submitRestriction() {
   restrictionError.value = ''
-  const preset = restrictionPresets.find((item) => item.id === restrictionForm.preset_id)
+  const preset = selectedRestrictionPreset.value
+  if (!preset) {
+    restrictionError.value = '请选择有效的限制区域。'
+    return
+  }
   if (!restrictionForm.name || !restrictionForm.reason) {
     restrictionError.value = '请填写限制区名称和设置原因。'
     return
@@ -635,6 +765,29 @@ async function toggleRestriction(restriction) {
   }
 }
 
+async function deleteRestriction(restriction) {
+  if (!restriction?.id || deletingRestrictionId.value || safetyOperating.value) return
+  const confirmed = globalThis.confirm?.(
+    `确定删除临时限制区“${restriction.name}”吗？\n\n删除后该区域将不再参与航线冲突检测，此操作不可撤销。`
+  )
+  if (!confirmed) return
+
+  deletingRestrictionId.value = restriction.id
+  restrictionDeleteError.value = ''
+  try {
+    safetyWorkspace.value = normalizeSafetyWorkspace(
+      await demoApi.deleteRestriction(restriction.id)
+    )
+    emit('safety-updated', safetyWorkspace.value)
+    await auditPanelRef.value?.refresh({ quiet: true })
+    emit('notify', `临时限制区已删除：${restriction.name}`)
+  } catch (error) {
+    restrictionDeleteError.value = `限制区删除失败：${error.message}`
+  } finally {
+    deletingRestrictionId.value = ''
+  }
+}
+
 async function executeRouteReplan(item) {
   const conflict = item?.conflicts?.[0]
   if (!item?.task?.id || !conflict?.restriction?.id || replanningTaskId.value) return
@@ -680,9 +833,20 @@ async function executeEmergencyStop() {
   }
 }
 
+async function autoRefreshWorkspace() {
+  await Promise.all([
+    loadQueue({ quiet: true }),
+    loadSafetyWorkspace({ quiet: true }),
+    auditPanelRef.value?.refresh({ quiet: true }),
+  ])
+}
+
+useTaskAutoRefresh(autoRefreshWorkspace)
+
 onMounted(() => {
   loadQueue()
   loadSafetyWorkspace()
+  loadRestrictionPresets()
 })
 
 onBeforeUnmount(() => clearTimeout(safetyRefreshTimer))
@@ -750,8 +914,12 @@ onBeforeUnmount(() => clearTimeout(safetyRefreshTimer))
 .success-state { color: #a5d6a7; }
 
 .task-queue { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 7px; }
-.queue-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 240px; padding: 8px 9px; color: #e7f1fb; text-align: left; background: rgba(4, 13, 27, 0.58); border: 1px solid rgba(144, 202, 249, 0.14); border-radius: 8px; cursor: pointer; }
+.queue-item { display: flex; align-items: stretch; min-width: 275px; color: #e7f1fb; background: rgba(4, 13, 27, 0.58); border: 1px solid rgba(144, 202, 249, 0.14); border-radius: 8px; overflow: hidden; }
 .queue-item.active { border-color: rgba(79, 195, 247, 0.65); background: rgba(3, 169, 244, 0.1); }
+.queue-select { display: flex; flex: 1 1 auto; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 8px 9px; color: inherit; text-align: left; background: transparent; border: 0; cursor: pointer; }
+.queue-delete { flex: 0 0 auto; padding: 0 8px; color: #ffab91; background: rgba(239, 83, 80, 0.06); border: 0; border-left: 1px solid rgba(239, 83, 80, 0.18); font-size: 9px; cursor: pointer; }
+.queue-delete:hover:not(:disabled) { background: rgba(239, 83, 80, 0.16); }
+.queue-delete:disabled { color: #607d8b; cursor: not-allowed; }
 .queue-main { display: flex; flex-direction: column; min-width: 0; }
 .queue-main strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .queue-main small { margin-top: 3px; color: #78909c; font-size: 9px; }
@@ -838,6 +1006,7 @@ onBeforeUnmount(() => clearTimeout(safetyRefreshTimer))
 .restriction-item button.active { color: #ffcc80; background: rgba(255, 152, 0, 0.12); border-color: rgba(255, 183, 77, 0.28); }
 .restriction-actions { display: flex; flex: 0 0 auto; flex-direction: row; align-items: center; gap: 5px; }
 .restriction-actions .locate-btn { color: #80deea; border-color: rgba(38, 198, 218, 0.25); }
+.restriction-actions .restriction-delete-btn { color: #ffab91; background: rgba(239, 83, 80, 0.08); border-color: rgba(239, 83, 80, 0.24); }
 
 .replan-card { margin-top: 10px; padding: 10px; background: rgba(4, 13, 27, 0.54); border: 1px solid rgba(38, 198, 218, 0.18); border-radius: 8px; }
 .replan-card > p { margin: 5px 0 8px; color: #90a4ae; font-size: 9px; line-height: 1.45; }
@@ -865,6 +1034,7 @@ onBeforeUnmount(() => clearTimeout(safetyRefreshTimer))
 .safety-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
 .safety-form-grid label, .full-safety-field, .emergency-card label { display: flex; flex-direction: column; gap: 4px; color: #90a4ae; font-size: 9px; }
 .safety-form-grid input, .safety-form-grid select, .full-safety-field textarea, .emergency-card select, .emergency-card textarea { box-sizing: border-box; width: 100%; padding: 7px 8px; color: #f5f9ff; background: rgba(4, 13, 27, 0.75); border: 1px solid rgba(144, 202, 249, 0.2); border-radius: 6px; outline: none; font: inherit; font-size: 10px; }
+.restriction-location-hint { color: #607d8b; font-size: 8px; line-height: 1.35; }
 .full-safety-field { margin-top: 7px; }
 .full-safety-field textarea, .emergency-card textarea { resize: vertical; }
 .create-restriction-btn { display: block; margin: 8px 0 0 auto; padding: 7px 9px; color: #271300; font-weight: 700; background: linear-gradient(135deg, #ffcc80, #ffb74d); border: 1px solid rgba(255, 255, 255, 0.32); border-radius: 6px; font-size: 9px; cursor: pointer; }

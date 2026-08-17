@@ -25,7 +25,9 @@ async function main() {
     })
 
     assert.ok(result.data.length > 0, 'No dynamic cells were returned around the route')
+    assert.equal(result.query_mode, 'complete-corridor')
     assert.equal(result.coverage.unique_grids, result.data.length)
+    assert.equal(result.coverage.matched_samples, result.coverage.sampled)
     assert.equal(new Set(result.data.map((cell) => cell.grid_code)).size, result.data.length)
     assert.ok(result.data.every((cell) => cell.route_distance_m <= 90))
     assert.ok(result.data.every((cell) => Number.isFinite(cell.suitability_score)))

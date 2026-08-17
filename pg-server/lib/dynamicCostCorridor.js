@@ -47,8 +47,8 @@ function filterCorridorCells(route, sourceCells, evaluated, corridorMeters) {
       )
     }
     return {
-      sample_col: Number(source.sample_col),
-      sample_row: Number(source.sample_row),
+      sample_col: source.sample_col == null ? null : Number(source.sample_col),
+      sample_row: source.sample_row == null ? null : Number(source.sample_row),
       sample_lng: point.lng,
       sample_lat: point.lat,
       route_distance_m: Math.round(routeDistance * 10) / 10,
@@ -80,15 +80,30 @@ async function evaluateRouteCorridor(body = {}, options = {}) {
   const zTarget = Number(body.z_target)
   if (!Number.isFinite(zTarget)) throw new TypeError('z_target must be a finite number')
   const bbox = buildCorridorBbox(route, corridorMeters)
-  const surfaceProvider = options.surfaceProvider || v3Database.getDynamicCostSurface
-  const surface = await surfaceProvider({
-    ...bbox,
-    zTarget,
-    cols: body.cols,
-    rows: body.rows,
-    at: body.at,
-    timeZone: body.time_zone,
-  })
+  const surface = options.surfaceProvider
+    ? await options.surfaceProvider({
+        ...bbox,
+        zTarget,
+        cols: body.cols,
+        rows: body.rows,
+        at: body.at,
+        timeZone: body.time_zone,
+      })
+    : await v3Database.listDynamicCostInputs({
+        ...bbox,
+        route,
+        corridorMeters,
+        zTarget,
+        at: body.at,
+        timeZone: body.time_zone,
+        unlimited: true,
+      }).then((result) => ({
+        at: result.at,
+        timeZone: result.timeZone,
+        cols: null,
+        rows: null,
+        cells: result.rows,
+      }))
   const sourceCells = surface.cells.map((cell) => ({ ...cell, grid_data_missing: cell.new_id == null }))
   const costOptions = {
     profile: body.profile,
@@ -106,6 +121,7 @@ async function evaluateRouteCorridor(body = {}, options = {}) {
     bbox,
     cols: surface.cols,
     rows: surface.rows,
+    query_mode: options.surfaceProvider ? 'sampled-surface' : 'complete-corridor',
     model: dynamicCost.getModelConfig(costOptions),
     summary: dynamicCost.summarizeCosts(data),
     coverage: {

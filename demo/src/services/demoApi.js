@@ -15,6 +15,7 @@ import {
 import { parseNaturalLanguageTask } from '../domain/taskParser'
 import { inspectRouteRestrictionConflict, replanRouteAroundRestriction } from '../domain/routeReplanner'
 import { createMockDataset } from '../mocks/demoData'
+import { notifyTaskDataChanged } from './taskSync'
 
 const API_BASE = '/api/demo'
 const V3_API_BASE = '/api/v3'
@@ -93,6 +94,19 @@ function appendAuditRecord(values) {
 
 let mockState = loadMockState()
 
+if (typeof globalThis.addEventListener === 'function') {
+  globalThis.addEventListener('storage', (event) => {
+    if (event.key === MOCK_STORAGE_KEY) mockState = loadMockState()
+  })
+}
+
+function publishDataChange(promise, detail) {
+  return Promise.resolve(promise).then((result) => {
+    notifyTaskDataChanged(detail)
+    return result
+  })
+}
+
 async function requestJson(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
@@ -124,37 +138,49 @@ async function requestV3Json(path, options = {}) {
 }
 
 async function withMode(realRequest, mockRequest) {
-  if (requestedMode === 'mock') return mockRequest()
+  if (requestedMode === 'mock') {
+    mockState = loadMockState()
+    return mockRequest()
+  }
   if (requestedMode === 'real') return realRequest()
 
   try {
     return await realRequest()
   } catch (error) {
     console.warn('[demo-api] 真实接口不可用，已回退到模拟数据：', error.message)
+    mockState = loadMockState()
     return mockRequest()
   }
 }
 
 async function withSafetyMode(realRequest, mockRequest) {
-  if (requestedSafetyMode === 'mock') return mockRequest()
+  if (requestedSafetyMode === 'mock') {
+    mockState = loadMockState()
+    return mockRequest()
+  }
   if (requestedSafetyMode === 'real') return realRequest()
 
   try {
     return await realRequest()
   } catch (error) {
     console.warn('[demo-api] V3安全管控接口不可用，已回退到模拟数据：', error.message)
+    mockState = loadMockState()
     return mockRequest()
   }
 }
 
 async function withWorkflowMode(realRequest, mockRequest) {
-  if (requestedWorkflowMode === 'mock') return mockRequest()
+  if (requestedWorkflowMode === 'mock') {
+    mockState = loadMockState()
+    return mockRequest()
+  }
   if (requestedWorkflowMode === 'real') return realRequest()
 
   try {
     return await realRequest()
   } catch (error) {
     console.warn('[demo-api] V3任务流程接口不可用，已回退到模拟数据：', error.message)
+    mockState = loadMockState()
     return mockRequest()
   }
 }
@@ -297,6 +323,53 @@ function mockReviewTask(taskId, review = {}) {
     approval,
     route: mockState.routes.find((route) => route.task_id === task.id) || null,
   }
+}
+
+const MOCK_TASK_DELETE_BLOCKED_STATUSES = new Set([
+  TASK_STATUS.DISPATCHED,
+  TASK_STATUS.IN_TRANSIT,
+  TASK_STATUS.ARRIVING,
+  TASK_STATUS.EXCEPTION,
+])
+
+function mockDeleteTask(taskId) {
+  const taskIndex = mockState.tasks.findIndex((item) => String(item.id) === String(taskId))
+  if (taskIndex < 0) throw new Error('待删除任务不存在')
+  const task = mockState.tasks[taskIndex]
+  if (MOCK_TASK_DELETE_BLOCKED_STATUSES.has(task.status)) {
+    throw new Error('执行中或异常处置中的任务不能删除，请先完成配送或安全处置')
+  }
+
+  mockState.tasks.splice(taskIndex, 1)
+  mockState.routes = mockState.routes.filter((route) => String(route.task_id) !== String(taskId))
+  mockState.approvals = mockState.approvals.filter((approval) => String(approval.task_id) !== String(taskId))
+  mockState.audit_records = (mockState.audit_records || [])
+    .filter((record) => String(record.task_id || '') !== String(taskId))
+  mockState.drones.forEach((drone) => {
+    if (String(drone.task_id || '') !== String(taskId)) return
+    Object.assign(drone, { task_id: null, status: DRONE_STATUS.IDLE, updated_at: new Date().toISOString() })
+  })
+  mockState.nodes.forEach((node) => {
+    if (String(node.task_id || '') !== String(taskId)) return
+    Object.assign(node, {
+      task_id: null,
+      availability: NODE_AVAILABILITY.AVAILABLE,
+      door_state: DOOR_STATE.CLOSED,
+      delivery_state: 'idle',
+      updated_at: new Date().toISOString(),
+    })
+  })
+  appendAuditRecord({
+    event_type: 'task_deleted',
+    category: AUDIT_CATEGORY.TASK,
+    title: '运输任务已清理',
+    description: `${task.origin}至${task.destination}的任务及关联记录已由校方删除。`,
+    actor: { role: ROLE.SCHOOL, name: '校方管理员', department: '校园管理部门' },
+    resource: { type: 'task', id: task.id },
+    metadata: { deleted_status: task.status, item_category: task.item_category },
+    created_at: new Date().toISOString(),
+  })
+  return { deleted_task: task }
 }
 
 function mockResubmitRejectedTask(taskId, values = {}) {
@@ -619,6 +692,29 @@ function mockToggleRestriction(restrictionId, active) {
   return buildMockSafetyWorkspace()
 }
 
+function mockDeleteRestriction(restrictionId) {
+  const restrictionIndex = mockState.restrictions.findIndex(
+    (item) => String(item.id) === String(restrictionId)
+  )
+  if (restrictionIndex < 0) throw new Error('临时限制区不存在')
+  const [restriction] = mockState.restrictions.splice(restrictionIndex, 1)
+  appendAuditRecord({
+    event_type: 'restriction_deleted',
+    category: AUDIT_CATEGORY.SAFETY,
+    title: '临时限制区已删除',
+    description: `${restriction.name}已由校方从限制区记录中清理。`,
+    actor: { role: ROLE.SCHOOL, name: '校方安全管控员', department: '保卫处' },
+    resource: { type: 'restriction', id: restriction.id },
+    metadata: {
+      previous_status: restriction.status,
+      radius_m: restriction.radius_m,
+      reason: restriction.reason,
+    },
+    created_at: new Date().toISOString(),
+  })
+  return buildMockSafetyWorkspace()
+}
+
 function mockEmergencyStopTask(taskId, reason = '') {
   const task = mockState.tasks.find((item) => item.id === taskId)
   if (!task || !ACTIVE_FLIGHT_STATUSES.has(task.status)) throw new Error('该任务当前不在可熔断状态')
@@ -759,13 +855,20 @@ export const demoApi = {
   },
 
   reviewTask(taskId, review) {
-    return withWorkflowMode(
+    return publishDataChange(withWorkflowMode(
       () => requestV3Json(`/tasks/${encodeURIComponent(taskId)}/review`, {
         method: 'POST',
         body: JSON.stringify(review),
       }),
       () => Promise.resolve(clone(mockReviewTask(taskId, review))),
-    )
+    ), { type: 'task-reviewed', task_id: taskId })
+  },
+
+  deleteTask(taskId) {
+    return publishDataChange(withWorkflowMode(
+      () => requestV3Json(`/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }),
+      () => Promise.resolve(clone(mockDeleteTask(taskId))),
+    ), { type: 'task-deleted', task_id: taskId })
   },
 
   getOperatorWorkspace() {
@@ -776,20 +879,20 @@ export const demoApi = {
   },
 
   dispatchTask(taskId, assignment) {
-    return withWorkflowMode(
+    return publishDataChange(withWorkflowMode(
       () => requestV3Json(`/operator/tasks/${encodeURIComponent(taskId)}/dispatch`, {
         method: 'POST',
         body: JSON.stringify(assignment),
       }),
       () => Promise.resolve(clone(mockDispatchTask(taskId, assignment))),
-    )
+    ), { type: 'task-dispatched', task_id: taskId })
   },
 
   advanceOperatorTask(taskId) {
-    return withWorkflowMode(
+    return publishDataChange(withWorkflowMode(
       () => requestV3Json(`/operator/tasks/${encodeURIComponent(taskId)}/advance`, { method: 'POST' }),
       () => Promise.resolve(clone(mockAdvanceOperatorTask(taskId))),
-    )
+    ), { type: 'task-advanced', task_id: taskId })
   },
 
   getSafetyWorkspace() {
@@ -800,40 +903,47 @@ export const demoApi = {
   },
 
   createRestriction(values) {
-    return withSafetyMode(
+    return publishDataChange(withSafetyMode(
       () => requestV3Json('/safety/restrictions', { method: 'POST', body: JSON.stringify(values) }),
       () => Promise.resolve(clone(mockCreateRestriction(values))),
-    )
+    ), { type: 'safety-restriction-created' })
   },
 
   setRestrictionActive(restrictionId, active) {
-    return withSafetyMode(
+    return publishDataChange(withSafetyMode(
       () => requestV3Json(`/safety/restrictions/${encodeURIComponent(restrictionId)}`, {
         method: 'PATCH',
         body: JSON.stringify({ active }),
       }),
       () => Promise.resolve(clone(mockToggleRestriction(restrictionId, active))),
-    )
+    ), { type: 'safety-restriction-updated', restriction_id: restrictionId })
+  },
+
+  deleteRestriction(restrictionId) {
+    return publishDataChange(withSafetyMode(
+      () => requestV3Json(`/safety/restrictions/${encodeURIComponent(restrictionId)}`, { method: 'DELETE' }),
+      () => Promise.resolve(clone(mockDeleteRestriction(restrictionId))),
+    ), { type: 'safety-restriction-deleted', restriction_id: restrictionId })
   },
 
   emergencyStopTask(taskId, reason) {
-    return withSafetyMode(
+    return publishDataChange(withSafetyMode(
       () => requestV3Json(`/safety/tasks/${encodeURIComponent(taskId)}/emergency-stop`, {
         method: 'POST',
         body: JSON.stringify({ reason, actor: '校方安全管控员' }),
       }),
       () => Promise.resolve(clone(mockEmergencyStopTask(taskId, reason))),
-    )
+    ), { type: 'task-emergency-stopped', task_id: taskId })
   },
 
   replanTaskRoute(taskId, restrictionId) {
-    return withSafetyMode(
+    return publishDataChange(withSafetyMode(
       () => requestV3Json(`/safety/tasks/${encodeURIComponent(taskId)}/replan`, {
         method: 'POST',
         body: JSON.stringify({ restriction_id: restrictionId, actor: '校方安全管控员' }),
       }),
       () => Promise.resolve(clone(mockReplanTaskRoute(taskId, restrictionId))),
-    )
+    ), { type: 'task-route-replanned', task_id: taskId })
   },
 
   parseTask(inputText) {
@@ -872,7 +982,7 @@ export const demoApi = {
   },
 
   submitTask(task) {
-    return withWorkflowMode(
+    return publishDataChange(withWorkflowMode(
       () => requestV3Json('/tasks', { method: 'POST', body: JSON.stringify(task) }),
       () => {
         const saved = createTransportTask({ ...task, status: TASK_STATUS.PENDING_REVIEW })
@@ -894,17 +1004,17 @@ export const demoApi = {
         })
         return Promise.resolve(clone(saved))
       },
-    )
+    ), { type: 'task-submitted', task_id: task.id })
   },
 
   resubmitRejectedTask(taskId, task) {
-    return withWorkflowMode(
+    return publishDataChange(withWorkflowMode(
       () => requestV3Json(`/student/tasks/${encodeURIComponent(taskId)}/resubmit`, {
         method: 'PUT',
         body: JSON.stringify(task),
       }),
       () => Promise.resolve(clone(mockResubmitRejectedTask(taskId, task))),
-    )
+    ), { type: 'task-resubmitted', task_id: taskId })
   },
 
   listDrones() {
@@ -924,5 +1034,6 @@ export const demoApi = {
   resetMockState() {
     mockState = createMockDataset()
     persistMockState()
+    notifyTaskDataChanged({ type: 'mock-state-reset' })
   },
 }

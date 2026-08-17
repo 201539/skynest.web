@@ -47,7 +47,7 @@ function sendQueryError(res, error) {
   ].includes(error.code)
   const conflict = [
     'TASK_ALREADY_REVIEWED', 'TASK_NOT_DISPATCHABLE', 'TASK_ROUTE_MISSING',
-    'TASK_NOT_RESUBMITTABLE',
+    'TASK_NOT_RESUBMITTABLE', 'TASK_DELETE_ACTIVE',
     'DRONE_UNAVAILABLE', 'DRONE_BATTERY_LOW', 'DRONE_PAYLOAD_EXCEEDED',
     'NODE_UNAVAILABLE', 'NODE_TYPE_INVALID', 'NODE_ROUTE_MISMATCH', 'TASK_NOT_ADVANCEABLE',
     'TASK_ASSIGNMENT_MISSING', 'TASK_NOT_REPLANNABLE', 'TASK_ROUTE_CONTEXT_MISSING',
@@ -346,6 +346,17 @@ function createV3Router() {
     }
   })
 
+  router.delete('/tasks/:taskId', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
+    try {
+      const deletedTask = await taskWorkflowStore.deleteTask(req.params.taskId, {
+        actor: req.auth.user,
+      })
+      res.json({ deleted_task: deletedTask })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
   router.get('/operator/workspace', authService.requireRoles(ROLES.OPERATOR), async (_req, res) => {
     try {
       res.json(await operatorWorkflowStore.getOperatorWorkspace())
@@ -438,7 +449,7 @@ function createV3Router() {
     }
   })
 
-  router.post('/dynamic-cost/corridor', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
+  router.post('/dynamic-cost/corridor', authService.requireRoles(ROLES.SCHOOL, ROLES.OPERATOR), async (req, res) => {
     try {
       res.json(await dynamicCostCorridor.evaluateRouteCorridor(req.body || {}))
     } catch (error) {
@@ -499,7 +510,7 @@ function createV3Router() {
 
   router.delete('/safety/restrictions/:restrictionId', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
     try {
-      const restriction = await restrictionStore.cancelRestriction(
+      const restriction = await restrictionStore.deleteRestriction(
         req.params.restrictionId,
         { actor: req.auth.user.name }
       )

@@ -315,6 +315,7 @@ import { findExactBuilding as findExactBuildingInList } from '../utils/buildingS
 import RouteDecisionTraceCard from './RouteDecisionTraceCard.vue'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 import BuildingSearchField from './BuildingSearchField.vue'
+import { useTaskAutoRefresh } from '../composables/useTaskAutoRefresh'
 
 const emit = defineEmits(['submitted', 'notify', 'view-route'])
 const props = defineProps({
@@ -408,19 +409,20 @@ function switchWorkspaceTab(tab) {
   if (tab === 'tracking') loadStudentTasks()
 }
 
-async function loadStudentTasks() {
-  tasksLoading.value = true
-  tasksError.value = ''
+async function loadStudentTasks(options = {}) {
+  const quiet = options?.quiet === true
+  if (!quiet) tasksLoading.value = true
   try {
     studentWorkspace.value = await demoApi.getStudentWorkspace()
+    tasksError.value = ''
     if (!studentTasks.value.some((item) => item.task.id === selectedTaskId.value)) {
       selectedTaskId.value = studentTasks.value[0]?.task.id || ''
     }
   } catch (error) {
     console.error('学生任务进度加载失败', error)
-    tasksError.value = `任务进度加载失败：${error.message}`
+    if (!quiet || !studentTasks.value.length) tasksError.value = `任务进度加载失败：${error.message}`
   } finally {
-    tasksLoading.value = false
+    if (!quiet) tasksLoading.value = false
   }
 }
 
@@ -822,6 +824,7 @@ function resetForm(options = {}) {
   if (!options.preserveResult) lastSubmitted.value = null
 }
 
+useTaskAutoRefresh(loadStudentTasks)
 onMounted(() => Promise.all([loadStudentTasks(), loadBuildings()]))
 </script>
 

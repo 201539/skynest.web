@@ -38,6 +38,8 @@ function normalizeTaskId(value) {
   return parsed
 }
 
+const TASK_DELETE_BLOCKED_STATUSES = new Set(['dispatched', 'running', 'arriving', 'suspended'])
+
 function normalizeDeadline(value) {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) throw new TypeError('deadline must be a valid date-time')
@@ -567,6 +569,79 @@ async function reviewTask(taskId, review = {}, options = {}) {
   }
 }
 
+async function deleteTask(taskId, options = {}) {
+  const id = normalizeTaskId(taskId)
+  const client = options.client || await pool.connect()
+  const ownsClient = !options.client
+  try {
+    if (ownsClient) await client.query('BEGIN')
+    const taskResult = await client.query(
+      'SELECT * FROM runtime.tasks WHERE task_id = $1 FOR UPDATE',
+      [id]
+    )
+    if (!taskResult.rowCount) {
+      const error = new Error(`Task ${id} does not exist`)
+      error.code = 'TASK_NOT_FOUND'
+      throw error
+    }
+
+    const row = taskResult.rows[0]
+    if (TASK_DELETE_BLOCKED_STATUSES.has(row.status)) {
+      const error = new Error('执行中或异常处置中的任务不能删除，请先完成配送或安全处置')
+      error.code = 'TASK_DELETE_ACTIVE'
+      throw error
+    }
+
+    const deletedTask = normalizeTask(row)
+    await client.query(
+      `UPDATE runtime.drones
+       SET task_id = NULL,
+           status = CASE WHEN status = 'task' THEN 'idle' ELSE status END,
+           updated_at = now()
+       WHERE task_id = $1`,
+      [id]
+    )
+    await client.query(
+      `UPDATE runtime.node_states
+       SET task_id = NULL, availability = 'available', door_state = 'closed',
+           delivery_state = 'idle', updated_at = now()
+       WHERE task_id = $1`,
+      [id]
+    )
+    await client.query('DELETE FROM runtime.operation_events WHERE task_id = $1', [id])
+    await client.query('DELETE FROM runtime.approvals WHERE task_id = $1', [id])
+    await client.query('DELETE FROM runtime.audit_events WHERE task_id = $1', [id])
+    await client.query('DELETE FROM runtime.routes WHERE task_id = $1', [id])
+    await client.query('DELETE FROM runtime.tasks WHERE task_id = $1', [id])
+
+    await auditStore.appendEvent({
+      event_type: 'task_deleted',
+      category: 'task',
+      title: '运输任务已清理',
+      description: `${deletedTask.origin}至${deletedTask.destination}的任务及关联记录已由校方删除。`,
+      actor: {
+        role: 'school',
+        name: options.actor?.name || options.actor || '校方管理员',
+        department: options.actor?.department || '',
+      },
+      resource: { type: 'task', id },
+      metadata: {
+        deleted_status: deletedTask.status,
+        item_category: deletedTask.item_category,
+        requester_name: deletedTask.requester?.name || '',
+      },
+    }, { client })
+
+    if (ownsClient) await client.query('COMMIT')
+    return deletedTask
+  } catch (error) {
+    if (ownsClient) await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    if (ownsClient) client.release()
+  }
+}
+
 async function close() {
   await pool.end()
 }
@@ -578,6 +653,7 @@ module.exports = {
   listWorkspace,
   getTaskWorkspace,
   reviewTask,
+  deleteTask,
   createApprovedRoute,
   close,
   _pool: pool,

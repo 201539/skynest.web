@@ -319,17 +319,17 @@ DASHSCOPE_MODEL=qwen-plus
 | 静态规则 | `GET /api/v3/nodes`、`/vehicle-rules`、`/high-risk-categories`、`/drones` | 兼容节点接口、规则和无人机 |
 | Agent | `POST /api/v3/agent/parse`、`GET /api/v3/agent/status`、`PUT /api/v3/agent/config` | 任务解析与解释来源 |
 | 师生任务 | `GET/POST /api/v3/tasks`、`GET /api/v3/student/workspace`、`PUT /api/v3/student/tasks/:taskId/resubmit` | 提交、跟踪及驳回后修改重提 |
-| 校方审核 | `GET /api/v3/reviews`、`POST /api/v3/tasks/:taskId/review` | 审核与生成航线 |
+| 校方审核 | `GET /api/v3/reviews`、`POST /api/v3/tasks/:taskId/review`、`DELETE /api/v3/tasks/:taskId` | 审核、生成航线与清理非执行中任务 |
 | 运营执行 | `GET /api/v3/operator/workspace`、`POST .../dispatch`、`POST .../advance` | 派发和状态推进 |
 | 动态算法 | `GET /api/v3/grids/bbox`、`POST /api/v3/dynamic-cost/evaluate` | V3 格网与 Cost |
-| 安全管控 | `/api/v3/safety/*`、`/api/v3/replanning/*` | 限制区、重规划与熔断 |
+| 安全管控 | `/api/v3/safety/*`、`DELETE /api/v3/safety/restrictions/:restrictionId`、`/api/v3/replanning/*` | 限制区增删、重规划与熔断 |
 | 审计解释 | `GET /api/v3/audit`、`GET /api/v3/tasks/:taskId/route-explanation` | 审计与航线说明 |
 
 师生端和校方航线规划均使用 `static.buildings` 中的 83 栋正式建筑。任务地点必须完成正式名称匹配后才能提交；系统通过 `building_node_distance` 自动选择起点建筑最近的 `hub/a~e` 起飞节点，以及终点建筑最近的 `A~G` L3 接驳箱。旧 `places.json` 只用于旧坐标标定维护，不会作为正式任务的航线端点。
 
 三维地图默认显示数据库中的83栋正式建筑点位和13个三级运输节点：`hub` 为L1综合枢纽，小写 `a~e` 为L2起飞机巢，大写 `A~G` 为L3接驳箱。建筑名称在近景显示，节点保持全校区可见；点击点位可查看正式名称、坐标、分类或节点状态。规划航线时实际采用的起飞节点和接驳箱会在地图上高亮，并写入航线 `planning_context.access_points` 供任务航线再次打开时恢复。
 
-校方生成或查看航线后，地图通过 `POST /api/v3/dynamic-cost/corridor` 加载航线两侧默认 90 米范围内的真实格网，并按同一时刻的静态层、周期层和实时层动态 Cost 综合适航分着色。周期层同时读取人口热度、节假日、上课时段、场馆开放时间和食堂营业时段；周期表已有 `grid_code` 时优先精确匹配，当前空值数据则通过83栋正式建筑点位映射到教学楼、宿舍/图书馆和食堂周边。点击格网可查看三层分数、周期命中、综合 Cost、主要风险和硬约束；镜头移动不会再把航线走廊覆盖为旧的视口静态格网。
+校方生成或查看航线后，地图通过 `POST /api/v3/dynamic-cost/corridor` 加载格网中心距航线默认不超过 90 米、且位于当前飞行高度层的全部真实格网，并按同一时刻的静态层、周期层和实时层动态 Cost 综合适航分着色。走廊查询直接使用空间条件读取真实格网，不再受固定 `70 × 70` 采样总数限制，因此长航线也不会因采样间距增大而显示稀疏。周期层同时读取人口热度、节假日、上课时段、场馆开放时间和食堂营业时段；周期表已有 `grid_code` 时优先精确匹配，当前空值数据则通过83栋正式建筑点位映射到教学楼、宿舍/图书馆和食堂周边。点击格网可查看三层分数、周期命中、综合 Cost、主要风险和硬约束；镜头移动不会再把航线走廊覆盖为旧的视口静态格网。
 
 航线格网默认每 30 秒按当前时间重新计算一次，并在页面切到后台时暂停、返回页面后自动恢复。天气记录默认以 30 分钟为新鲜度上限：有效期内作为实时数据参与风险与硬约束判断，超时后标为“过期”并加入保守风险，不再用旧天气触发实时硬约束；没有数据库天气记录时使用明确标注的默认天气参数（风速 3 m/s、降雨 0 mm/h、能见度 5000 m）参与 Cost，不冒充实时数据。数据库一旦提供天气观测记录便优先覆盖默认值。刷新时间、新鲜度和默认天气可分别通过 `grid.dynamicRefreshSeconds`、`grid.weatherFreshnessMinutes` 与 `grid.defaultWeather` 配置，校方页面会显示实时、默认、过期和缺失格网数量。
 

@@ -13,7 +13,7 @@ async function main() {
     () => restrictionStore.validateRestriction({
       name: 'invalid radius',
       reason: 'test',
-      center: { lng: 118.9479, lat: 32.1101 },
+      center: { lng: 118.9510165, lat: 32.1148087 },
       radius_m: 20,
       start_at: new Date().toISOString(),
       end_at: new Date(Date.now() + 3600000).toISOString(),
@@ -31,7 +31,7 @@ async function main() {
     const created = await restrictionStore.createRestriction({
       name: 'Codex事务自测限制区',
       reason: '接口增删改查自测，事务结束后回滚',
-      center: { lng: 118.9479, lat: 32.1101 },
+      center: { lng: 118.9510165, lat: 32.1148087 },
       radius_m: 150,
       start_at: startAt.toISOString(),
       end_at: new Date(startAt.getTime() + 4 * 3600000).toISOString(),
@@ -40,8 +40,8 @@ async function main() {
 
     assert.equal(created.name, 'Codex事务自测限制区')
     assert.equal(created.status, 'active')
-    assert.ok(Math.abs(created.center.lng - 118.9479) < 0.00002)
-    assert.ok(Math.abs(created.center.lat - 32.1101) < 0.00002)
+    assert.ok(Math.abs(created.center.lng - 118.9510165) < 0.00002)
+    assert.ok(Math.abs(created.center.lat - 32.1148087) < 0.00002)
     assert.ok(Math.abs(created.radius_m - 150) <= 2)
 
     const listed = await restrictionStore.listRestrictions({ client })

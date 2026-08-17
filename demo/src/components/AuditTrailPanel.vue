@@ -144,6 +144,7 @@ function metadataLabel(key) {
     needs_manual_review: '人工复核', drone_name: '执行无人机', drone_status: '无人机状态',
     node_name: '接驳节点', node_state: '节点状态', node_availability: '节点可用状态',
     task_status: '任务状态', radius_m: '限制半径', end_at: '结束时间', status: '限制状态',
+    deleted_status: '删除前状态', previous_status: '原状态', requester_name: '申请人',
     distance_change_percent: '航程变化', risk_change_percent: '风险变化', safety_buffer_meters: '安全缓冲',
     restriction_id: '限制区编号', drone_id: '无人机编号', node_id: '节点编号',
   }[key] || key
@@ -159,20 +160,21 @@ function formatMetadataValue(key, value) {
   return String(value)
 }
 
-async function loadAudit() {
-  loading.value = true
-  loadError.value = ''
+async function loadAudit(options = {}) {
+  const quiet = options?.quiet === true
+  if (!quiet) loading.value = true
   try {
     const result = await demoApi.getAuditWorkspace()
     workspace.value = {
       records: Array.isArray(result?.records) ? result.records : [],
       summary: { total: 0, today: 0, safety: 0, exceptions: 0, ...(result?.summary || {}) },
     }
+    loadError.value = ''
     emit('count', workspace.value.summary.total)
   } catch (error) {
-    loadError.value = `审计记录加载失败：${error.message}`
+    if (!quiet || !workspace.value.records.length) loadError.value = `审计记录加载失败：${error.message}`
   } finally {
-    loading.value = false
+    if (!quiet) loading.value = false
   }
 }
 

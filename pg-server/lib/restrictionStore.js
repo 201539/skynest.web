@@ -272,6 +272,45 @@ async function cancelRestriction(restrictionId, options = {}) {
   return setRestrictionActive(restrictionId, false, options)
 }
 
+async function deleteRestriction(restrictionId, options = {}) {
+  const id = normalizeId(restrictionId)
+  const client = options.client || await pool.connect()
+  const ownsClient = !options.client
+  try {
+    if (ownsClient) await client.query('BEGIN')
+    const restriction = await getRestriction(id, { client })
+    const result = await client.query(
+      'DELETE FROM runtime.no_fly_zones WHERE zone_id = $1',
+      [id]
+    )
+    if (!result.rowCount) {
+      const error = new Error(`Restriction ${id} does not exist`)
+      error.code = 'RESTRICTION_NOT_FOUND'
+      throw error
+    }
+    await auditStore.appendEvent({
+      event_type: 'restriction_deleted',
+      category: 'safety',
+      title: '临时限制区已删除',
+      description: `${restriction.name}已由校方从限制区记录中清理。`,
+      actor: { role: 'school', name: options.actor || '校方安全管控员', department: '校园管理部门' },
+      resource: { type: 'restriction', id },
+      metadata: {
+        previous_status: restriction.status,
+        radius_m: restriction.radius_m,
+        reason: restriction.reason,
+      },
+    }, { client })
+    if (ownsClient) await client.query('COMMIT')
+    return restriction
+  } catch (error) {
+    if (ownsClient) await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    if (ownsClient) client.release()
+  }
+}
+
 function normalizeRoute(row) {
   const changes = Array.isArray(row.change_trigger?.changes) ? row.change_trigger.changes : []
   const noFlyChange = changes.find((change) => change?.table === 'no_fly_zones')
@@ -457,6 +496,7 @@ module.exports = {
   createRestriction,
   setRestrictionActive,
   cancelRestriction,
+  deleteRestriction,
   listRecentReplans,
   listActiveTasks,
   listAffectedRoutes,

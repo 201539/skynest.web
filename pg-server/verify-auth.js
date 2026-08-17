@@ -31,12 +31,15 @@ async function main() {
   assert.deepEqual(options.roles.map((item) => item.role), ['student', 'school', 'operator'])
   const studentAccount = options.roles.find((item) => item.role === 'student')
   const schoolAccount = options.roles.find((item) => item.role === 'school')
-  assert.ok(studentAccount.demo_password && schoolAccount.demo_password)
+  const operatorAccount = options.roles.find((item) => item.role === 'operator')
+  assert.ok(studentAccount.demo_password && schoolAccount.demo_password && operatorAccount.demo_password)
 
   const student = authService.login(mockRequest('127.0.0.2'), studentAccount.username, studentAccount.demo_password)
   const school = authService.login(mockRequest('127.0.0.3'), schoolAccount.username, schoolAccount.demo_password)
+  const operator = authService.login(mockRequest('127.0.0.4'), operatorAccount.username, operatorAccount.demo_password)
   assert.equal(student.user.role, 'student')
   assert.equal(school.user.role, 'school')
+  assert.equal(operator.user.role, 'operator')
 
   const valid = authenticate(student.token)
   assert.equal(valid.nextCalled, true)
@@ -51,6 +54,23 @@ async function main() {
   authService.requireRoles('school')(valid.req, forbiddenRes, () => { forbiddenNext = true })
   assert.equal(forbiddenRes.statusCode, 403)
   assert.equal(forbiddenNext, false)
+
+  const dynamicCostGuard = authService.requireRoles('school', 'operator')
+  const schoolAuth = authenticate(school.token)
+  const operatorAuth = authenticate(operator.token)
+  const schoolDynamicCostRes = mockResponse()
+  const operatorDynamicCostRes = mockResponse()
+  let schoolDynamicCostAllowed = false
+  let operatorDynamicCostAllowed = false
+  dynamicCostGuard(schoolAuth.req, schoolDynamicCostRes, () => { schoolDynamicCostAllowed = true })
+  dynamicCostGuard(operatorAuth.req, operatorDynamicCostRes, () => { operatorDynamicCostAllowed = true })
+  assert.equal(schoolDynamicCostAllowed, true)
+  assert.equal(operatorDynamicCostAllowed, true)
+  const studentDynamicCostRes = mockResponse()
+  let studentDynamicCostAllowed = false
+  dynamicCostGuard(valid.req, studentDynamicCostRes, () => { studentDynamicCostAllowed = true })
+  assert.equal(studentDynamicCostAllowed, false)
+  assert.equal(studentDynamicCostRes.statusCode, 403)
 
   const client = await taskWorkflowStore._pool.connect()
   try {
@@ -81,6 +101,7 @@ async function main() {
     roles: options.roles.map((item) => item.role),
     authentication_required: true,
     role_permission_denied: true,
+    dynamic_cost_roles: ['school', 'operator'],
     student_workspace_isolated: true,
     logout_invalidates_session: true,
     transaction_rolled_back: true,

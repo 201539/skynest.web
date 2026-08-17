@@ -334,14 +334,14 @@
         {{ gridLoading ? '加载中...' : '显示当前视口静态格网' }}
       </button>
       <button
-        v-if="activeRole === ROLE.SCHOOL && currentRoute?.planned"
+        v-if="canViewDynamicCost && currentRoute?.planned"
         class="full-width-btn dynamic-grid-btn"
         @click="loadDynamicRouteGrids(currentRoute, { forceCurrentTime: true })"
         :disabled="gridLoading"
       >
         刷新航线动态评分
       </button>
-      <label v-if="activeRole === ROLE.SCHOOL && currentRoute?.planned" class="dynamic-auto-refresh">
+      <label v-if="canViewDynamicCost && currentRoute?.planned" class="dynamic-auto-refresh">
         <input v-model="gridAutoRefreshEnabled" type="checkbox" />
         <span>每 {{ gridAutoRefreshSeconds }} 秒自动刷新</span>
       </label>
@@ -446,6 +446,8 @@ const API_BASE = '/api'
 const activeRole = ref('')
 const currentUser = ref(null)
 const authReady = ref(false)
+const dynamicCostRoles = new Set([ROLE.SCHOOL, ROLE.OPERATOR])
+const canViewDynamicCost = computed(() => dynamicCostRoles.has(activeRole.value))
 const leftPanelCollapsed = ref(false)
 const rightPanelCollapsed = ref(false)
 
@@ -558,7 +560,7 @@ async function handleViewTaskRoute(payload) {
   layers.route = true
   layers.drone = true
   await loadSelectedRoute(taskRoute, { isPlanned: true, skipEvaluation: true })
-  if (activeRole.value === ROLE.SCHOOL) {
+  if (canViewDynamicCost.value) {
     await loadDynamicRouteGrids(taskRoute, {
       forceCurrentTime: !taskRoute.planning_context?.planned_for,
       at: taskRoute.planning_context?.planned_for,
@@ -2445,7 +2447,7 @@ async function replaceRenderedGrids(data, metadata, controller, requestVersion) 
 function dynamicGridAutoRefreshEligible() {
   return Boolean(
     gridAutoRefreshEnabled.value
-    && activeRole.value === ROLE.SCHOOL
+    && canViewDynamicCost.value
     && gridDisplayMode.value === 'route-dynamic'
     && currentRoute.value?.planned
     && layers.grid
@@ -2495,7 +2497,7 @@ watch(
 
 async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
   const route = routeOverride || currentRoute.value
-  if (activeRole.value !== ROLE.SCHOOL) return
+  if (!canViewDynamicCost.value) return
   if (!viewer || viewer.isDestroyed() || !layers.grid || !route?.points?.length || route.points.length < 2) return
 
   const requestVersion = ++gridRequestVersion
@@ -2513,8 +2515,6 @@ async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
       route: route.points.map((point) => ({ lng: Number(point.lng), lat: Number(point.lat) })),
       corridor_meters: gridCorridorMeters.value,
       z_target: Number(route.points[0]?.height || planFlightHeight.value || 80) - groundHeight.value,
-      cols: 70,
-      rows: 70,
       at: planningAt,
       time_zone: 'Asia/Shanghai',
       profile: 'balanced',
@@ -2558,7 +2558,7 @@ async function loadDynamicRouteGrids(routeOverride = null, options = {}) {
 }
 
 function reloadCurrentGridDisplay() {
-  if (activeRole.value === ROLE.SCHOOL && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) {
+  if (canViewDynamicCost.value && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) {
     return loadDynamicRouteGrids(currentRoute.value, { forceCurrentTime: true })
   }
   return reloadGridsInView()
@@ -2711,7 +2711,7 @@ async function reloadGridsInView() {
 
 function scheduleGridReload(delay = appConfig.grid?.reloadDebounceMs ?? 350) {
   if (!layers.grid || !appConfig.grid?.loadOnCameraMove) return
-  if (activeRole.value === ROLE.SCHOOL && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) return
+  if (canViewDynamicCost.value && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) return
   clearTimeout(gridLoadTimer)
   gridLoadTimer = setTimeout(reloadGridsInView, delay)
 }
@@ -2828,13 +2828,13 @@ function onRouteSelect() {
     return
   }
   const selectedRoute = routes.value.find((route) => route.id === selectedRouteId.value)
-  if (!(activeRole.value === ROLE.SCHOOL && selectedRoute?.planned)) {
+  if (!(canViewDynamicCost.value && selectedRoute?.planned)) {
     resetDynamicGridDisplay({ reloadStatic: true })
   }
   layers.route = true
   layers.drone = true
   loadSelectedRoute().then(() => {
-    if (activeRole.value === ROLE.SCHOOL && currentRoute.value?.planned && layers.grid) return loadDynamicRouteGrids(currentRoute.value)
+    if (canViewDynamicCost.value && currentRoute.value?.planned && layers.grid) return loadDynamicRouteGrids(currentRoute.value)
     return undefined
   })
 }
@@ -3397,7 +3397,7 @@ async function toggleHeatmap() {
 function toggleGrid() {
   for (const prim of gridPrimitives) prim.show = layers.grid
   if (layers.grid) {
-    if (activeRole.value === ROLE.SCHOOL && currentRoute.value?.planned) loadDynamicRouteGrids(currentRoute.value)
+    if (canViewDynamicCost.value && currentRoute.value?.planned) loadDynamicRouteGrids(currentRoute.value)
     else scheduleGridReload()
   } else {
     gridAbortController?.abort()
@@ -3605,7 +3605,7 @@ function toggleDrone() {
 function onGridAlphaChange() {
   clearTimeout(gridLoadTimer)
   gridLoadTimer = setTimeout(() => {
-    if (activeRole.value === ROLE.SCHOOL && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) loadDynamicRouteGrids(currentRoute.value)
+    if (canViewDynamicCost.value && gridDisplayMode.value === 'route-dynamic' && currentRoute.value?.planned) loadDynamicRouteGrids(currentRoute.value)
     else reloadGridsInView()
   }, 200)
 }

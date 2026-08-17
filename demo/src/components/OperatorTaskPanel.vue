@@ -88,7 +88,7 @@
               type="button"
               @click="emit('view-route', { route: selectedItem.route, task: selectedItem.task })"
             >
-              地图查看
+              地图查看 Cost
             </button>
           </div>
           <template v-if="selectedItem.route">
@@ -172,6 +172,7 @@ import { demoApi } from '../services/demoApi'
 import RouteDecisionTraceCard from './RouteDecisionTraceCard.vue'
 import RouteExplanationCard from './RouteExplanationCard.vue'
 import TaskAgentAnalysisCard from './TaskAgentAnalysisCard.vue'
+import { useTaskAutoRefresh } from '../composables/useTaskAutoRefresh'
 
 const emit = defineEmits(['updated', 'notify', 'view-route'])
 
@@ -319,17 +320,18 @@ function formatDuration(seconds) {
   return Number.isFinite(Number(seconds)) ? `约 ${Math.max(1, Math.round(Number(seconds) / 60))} 分钟` : '时长待计算'
 }
 
-async function loadWorkspace() {
-  loading.value = true
-  loadError.value = ''
+async function loadWorkspace(options = {}) {
+  const quiet = options?.quiet === true
+  if (!quiet) loading.value = true
   try {
     workspace.value = await demoApi.getOperatorWorkspace()
+    loadError.value = ''
     if (!selectedTaskId.value) selectedTaskId.value = filteredTasks.value[0]?.task.id || ''
   } catch (error) {
     console.error('运营工作台加载失败', error)
-    loadError.value = `运营工作台加载失败：${error.message}`
+    if (!quiet || !workspace.value.tasks.length) loadError.value = `运营工作台加载失败：${error.message}`
   } finally {
-    loading.value = false
+    if (!quiet) loading.value = false
   }
 }
 
@@ -359,6 +361,7 @@ async function runNextAction() {
   }
 }
 
+useTaskAutoRefresh(loadWorkspace)
 onMounted(loadWorkspace)
 </script>
 

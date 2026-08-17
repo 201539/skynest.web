@@ -35,6 +35,18 @@ function requiredNumber(value, fieldName) {
   return parsed
 }
 
+function normalizeRouteLineGeoJson(value) {
+  if (value == null) return null
+  const coordinates = Array.isArray(value) ? value.map((point) => [
+    Number(point?.lng),
+    Number(point?.lat),
+  ]) : []
+  if (coordinates.length < 2 || coordinates.some(([lng, lat]) => !Number.isFinite(lng) || !Number.isFinite(lat))) {
+    throw new TypeError('route must contain at least two lng/lat points')
+  }
+  return JSON.stringify({ type: 'LineString', coordinates })
+}
+
 function normalizePointRow(row) {
   const normalized = {
     ...row,
@@ -451,7 +463,15 @@ async function listDynamicCostInputs(options = {}) {
 
   const at = normalizePlanningTime(options.at)
   const timeZone = options.timeZone || 'Asia/Shanghai'
-  const limit = clampLimit(options.limit, 500, 5000)
+  const routeGeoJson = normalizeRouteLineGeoJson(options.route)
+  const corridorMeters = routeGeoJson == null
+    ? null
+    : requiredNumber(options.corridorMeters, 'corridorMeters')
+  if (corridorMeters != null && corridorMeters <= 0) {
+    throw new RangeError('corridorMeters must be greater than 0')
+  }
+  const zTarget = optionalNumber(options.zTarget, 'zTarget')
+  const limit = options.unlimited === true ? null : clampLimit(options.limit, 500, 5000)
   const result = await pool.query(
     `
       WITH planning AS (
@@ -460,9 +480,33 @@ async function listDynamicCostInputs(options = {}) {
           $7::timestamptz AT TIME ZONE $8 AS local_at,
           EXTRACT(DOW FROM $7::timestamptz AT TIME ZONE $8)::smallint AS weekday,
           EXTRACT(HOUR FROM $7::timestamptz AT TIME ZONE $8)::smallint AS hour
+      ),
+      route_filter AS (
+        SELECT CASE
+          WHEN $10::json IS NULL THEN NULL
+          ELSE ST_SetSRID(ST_GeomFromGeoJSON($10::json), 4326)
+        END AS line_wgs84
+      ),
+      corridor_filter AS (
+        SELECT
+          line_wgs84,
+          CASE
+            WHEN line_wgs84 IS NULL THEN NULL
+            ELSE ST_Transform(ST_Buffer(line_wgs84::geography, $11)::geometry, 4490)
+          END AS corridor_4490
+        FROM route_filter
       )
       SELECT
         g.new_id, g.grid_code,
+        ST_X(ST_Transform(ST_Centroid(g.geomm), 4326)) AS sample_lng,
+        ST_Y(ST_Transform(ST_Centroid(g.geomm), 4326)) AS sample_lat,
+        CASE
+          WHEN corridor.line_wgs84 IS NULL THEN NULL
+          ELSE ST_Distance(
+            ST_Transform(ST_Centroid(g.geomm), 4326)::geography,
+            corridor.line_wgs84::geography
+          )
+        END AS route_distance_m,
         g.x_min, g.x_max, g.y_min, g.y_max, g.z_min, g.z_max,
         g.has_building, g.pop, g.building_class,
         g.sensitivity_level, g.privacy_level,
@@ -481,6 +525,7 @@ async function listDynamicCostInputs(options = {}) {
         COALESCE(event.names, '{}'::text[]) AS event_names
       FROM static.grid_3d g
       CROSS JOIN planning p
+      CROSS JOIN corridor_filter corridor
       LEFT JOIN LATERAL (
         SELECT pp.pop_value, pp.weekday, pp.hour
         FROM periodic.population pp
@@ -545,10 +590,24 @@ async function listDynamicCostInputs(options = {}) {
         AND g.y_max >= $3 AND g.y_min <= $4
         AND ($5::double precision IS NULL OR g.z_max >= $5)
         AND ($6::double precision IS NULL OR g.z_min <= $6)
+        AND ($12::double precision IS NULL OR (
+          g.z_min <= $12::double precision AND g.z_max > $12::double precision
+        ))
+        AND ($10::json IS NULL OR (
+          g.geomm && corridor.corridor_4490
+          AND ST_DWithin(
+            ST_Transform(ST_Centroid(g.geomm), 4326)::geography,
+            corridor.line_wgs84::geography,
+            $11::double precision
+          )
+        ))
       ORDER BY g.x_min, g.y_min, g.z_min
       LIMIT $9
     `,
-    [xMin, xMax, yMin, yMax, zMin, zMax, at, timeZone, limit]
+    [
+      xMin, xMax, yMin, yMax, zMin, zMax, at, timeZone, limit,
+      routeGeoJson, corridorMeters, zTarget,
+    ]
   )
   const rows = await periodicContext.enrichCells(pool, result.rows, { at, timeZone })
   return { at, timeZone, rows }
