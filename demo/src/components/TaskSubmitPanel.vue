@@ -158,6 +158,12 @@
         </label>
 
         <label class="form-field">
+          <span>具体物品 <b>*</b></span>
+          <input v-model.trim="form.item_description" type="text" placeholder="例如：两箱玻璃瓶" @input="markAnalysisChanged" />
+          <em v-if="errors.item_description">{{ errors.item_description }}</em>
+        </label>
+
+        <label class="form-field">
           <span>重量（kg） <b>*</b></span>
           <input v-model.number="form.weight_kg" type="number" min="0.01" step="0.1" placeholder="例如：2" @input="markAnalysisChanged" />
           <em v-if="errors.weight_kg">{{ errors.weight_kg }}</em>
@@ -264,7 +270,7 @@
           </div>
 
           <div class="tracking-grid">
-            <div><span>物品</span><strong>{{ selectedStudentTask.task.item_category }} · {{ selectedStudentTask.task.weight_kg }}kg</strong></div>
+            <div><span>物品</span><strong>{{ selectedStudentTask.task.item_description || selectedStudentTask.task.item_category }} · {{ selectedStudentTask.task.item_category }} · {{ selectedStudentTask.task.weight_kg }}kg</strong></div>
             <div><span>送达时限</span><strong>{{ formatDateTime(selectedStudentTask.task.deadline) }}</strong></div>
             <div><span>执行无人机</span><strong>{{ selectedStudentTask.assigned_drone?.name || '尚未分配' }}</strong></div>
             <div><span>接驳节点</span><strong>{{ selectedStudentTask.assigned_node?.name || '尚未分配' }}</strong></div>
@@ -326,6 +332,7 @@ const taskFieldLabels = Object.freeze({
   origin: '起点',
   destination: '终点',
   item_category: '物品类型',
+  item_description: '具体物品',
   weight_kg: '重量',
   deadline: '送达时限',
   priority: '优先级',
@@ -607,6 +614,7 @@ async function parseTaskInput() {
       applyParsedLocation('destination', parsed.destination),
     ])
     if (parsed.item_category) form.item_category = parsed.item_category
+    if (parsed.item_description) form.item_description = parsed.item_description
     if (parsed.weight_kg !== null && parsed.weight_kg !== undefined) form.weight_kg = parsed.weight_kg
     if (parsed.deadline) form.deadline = normalizeDeadlineForInput(parsed.deadline)
     if (parsed.priority) form.priority = parsed.priority
@@ -717,6 +725,7 @@ function validateForm() {
     origin: '请填写起点',
     destination: '请填写终点',
     item_category: '请选择物品类型',
+    item_description: '请填写具体物品',
     weight_kg: '请填写重量',
     deadline: '请选择送达时限',
   }

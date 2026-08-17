@@ -72,7 +72,13 @@ function parseWeight(text) {
 }
 
 function parseCategory(text) {
-  return CATEGORY_RULES.find((rule) => rule.keywords.some((keyword) => text.includes(keyword)))?.category || ''
+  return CATEGORY_RULES.find((rule) => rule.keywords.some((keyword) => text.includes(keyword)))?.category || '其他/无法识别'
+}
+
+function parseItemDescription(text, category) {
+  const match = text.match(/从\s*[^，。；]+?\s*(?:配送|转运|送|运|带)\s*([^，。；]+?)\s*到/)
+    || text.match(/(?:配送|转运|送|运|带)\s*([^，。；]+?)\s*到/)
+  return match?.[1]?.trim() || (category === '其他/无法识别' ? '' : CATEGORY_RULES.find((rule) => rule.category === category)?.keywords.find((word) => text.includes(word)) || '')
 }
 
 function cleanPlace(value = '') {
@@ -159,6 +165,7 @@ const AGENT_FIELD_LABELS = Object.freeze({
   origin: '起点',
   destination: '终点',
   item_category: '物品类型',
+  item_description: '具体物品',
   weight_kg: '重量',
   deadline: '送达时限',
 })
@@ -193,7 +200,7 @@ function buildAgentAnalysis(task, text) {
   const confidenceLevel = confidenceScore >= 85 ? 'high' : confidenceScore >= 65 ? 'medium' : 'low'
 
   const explanationParts = [
-    `我理解这是一项从${task.origin || '待确认起点'}运送至${task.destination || '待确认终点'}的${task.item_category || '待确认物品'}运输任务`,
+    `我理解这是一项从${task.origin || '待确认起点'}运送至${task.destination || '待确认终点'}的${task.item_description || task.item_category || '待确认物品'}运输任务`,
   ]
   if (task.weight_kg !== null) explanationParts.push(`货物重量约${task.weight_kg}公斤`)
   if (task.deadline) explanationParts.push(`需要在${formatAgentDeadline(task.deadline)}前送达`)
@@ -203,6 +210,7 @@ function buildAgentAnalysis(task, text) {
   const reasoning = []
   if (task.origin && task.destination) reasoning.push(`识别运输路径：${task.origin} → ${task.destination}`)
   if (task.item_category) reasoning.push(`根据物品关键词归类为“${task.item_category}”`)
+  if (task.item_description) reasoning.push(`具体物品：${task.item_description}`)
   if (task.weight_kg !== null) reasoning.push(`识别载重：${task.weight_kg} kg`)
   if (task.deadline) reasoning.push(`识别送达时限：${formatAgentDeadline(task.deadline)}`)
   if (task.special_requirements.length) reasoning.push(`识别特殊要求：${task.special_requirements.join('、')}`)
@@ -234,7 +242,9 @@ export function parseNaturalLanguageTask(inputText = '', options = {}) {
   const text = String(inputText).replace(/\s+/g, ' ').trim()
   const now = options.now instanceof Date ? new Date(options.now) : new Date()
   const { origin, destination } = parsePlaces(text)
-  const itemCategory = parseCategory(text)
+  const preliminaryDescription = parseItemDescription(text, '其他/无法识别')
+  const itemCategory = parseCategory(preliminaryDescription || text)
+  const itemDescription = preliminaryDescription || parseItemDescription(text, itemCategory)
   const weight = parseWeight(text)
   const deadline = parseTime(text, now)
   const requirements = parseRequirements(text)
@@ -245,6 +255,7 @@ export function parseNaturalLanguageTask(inputText = '', options = {}) {
     origin,
     destination,
     item_category: itemCategory,
+    item_description: itemDescription,
     weight_kg: weight,
     deadline,
     priority: parsePriority(text),

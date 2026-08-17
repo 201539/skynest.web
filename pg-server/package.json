@@ -6,6 +6,7 @@
     "setup-db": "node setup-db.js",
     "migrate": "node run-migrations.js",
     "test:agent": "node agent/testAgent.js",
+    "test:student-agent": "node agent/testStudentExtraction.js",
     "test:demo": "node demo/testTaskState.js",
     "test:route": "node demo/testRouteOrchestrator.js",
     "test:provider": "node demo/testMockProvider.js",
