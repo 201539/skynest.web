@@ -67,6 +67,7 @@ function validateTask(values = {}) {
     origin,
     destination,
     itemCategory: requiredText(values.item_category, 'item_category', 100),
+    itemDescription: requiredText(values.item_description || values.item_category, 'item_description', 200),
     weight,
     deadline: normalizeDeadline(values.deadline),
     priority: normalizePriority(values.priority),
@@ -104,6 +105,7 @@ function normalizeTask(row) {
     origin: row.origin,
     destination: row.destination,
     item_category: row.item_category,
+    item_description: row.item_description || row.item_category,
     weight_kg: row.weight_kg == null ? null : Number(row.weight_kg),
     deadline: row.deadline,
     priority: row.priority,
@@ -260,11 +262,11 @@ async function createTask(values = {}, options = {}) {
         origin, destination, item_category, weight_kg, deadline, priority,
         safety_level, special_requirements, recommended_vehicle_class,
         candidate_node_ids, needs_manual_review, missing_fields,
-        status, input_text, requester, agent_analysis
+        status, input_text, requester, agent_analysis, item_description
       ) VALUES (
         $1, $2, $3, $4, $5::timestamptz AT TIME ZONE $16, $6,
         $7, $8::jsonb, $9, $10::jsonb, $11, $12::jsonb,
-        'submitted', $13, $14::jsonb, $15::jsonb
+        'submitted', $13, $14::jsonb, $15::jsonb, $17
       )
       RETURNING *
     `,
@@ -285,6 +287,7 @@ async function createTask(values = {}, options = {}) {
       JSON.stringify(task.requester),
       task.agentAnalysis ? JSON.stringify(task.agentAnalysis) : null,
       TIME_ZONE,
+      task.itemDescription,
     ]
   )
     const saved = normalizeTask(result.rows[0])
@@ -365,6 +368,7 @@ async function resubmitRejectedTask(taskId, values = {}, options = {}) {
           missing_fields = $13::jsonb,
           input_text = $14,
           agent_analysis = $15::jsonb,
+          item_description = $17,
           status = 'submitted',
           assigned_drone_id = NULL,
           assigned_node_id = NULL,
@@ -389,6 +393,7 @@ async function resubmitRejectedTask(taskId, values = {}, options = {}) {
         task.inputText,
         task.agentAnalysis ? JSON.stringify(task.agentAnalysis) : null,
         TIME_ZONE,
+        task.itemDescription,
       ]
     )
     const saved = normalizeTask(result.rows[0])

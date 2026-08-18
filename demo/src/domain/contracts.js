@@ -88,6 +88,7 @@ export const REQUIRED_TASK_FIELDS = Object.freeze([
   'origin',
   'destination',
   'item_category',
+  'item_description',
   'weight_kg',
   'deadline',
 ])
@@ -103,6 +104,7 @@ export function createTransportTask(overrides = {}) {
     origin: '',
     destination: '',
     item_category: '',
+    item_description: '',
     weight_kg: null,
     deadline: null,
     priority: 'normal',
