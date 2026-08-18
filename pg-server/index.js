@@ -142,14 +142,14 @@ function intersectGridBounds(input, metadata) {
   return bbox
 }
 
-function estimateGridCount(bbox, cellSize, dimensions = 3) {
+function estimateGridCount(bbox, cellSize) {
   const xCount = Math.max(1, Math.ceil((bbox.xMax - bbox.xMin) / cellSize.x) + 1)
   const yCount = Math.max(1, Math.ceil((bbox.yMax - bbox.yMin) / cellSize.y) + 1)
   const zCount = Math.max(1, Math.ceil((bbox.zMax - bbox.zMin) / cellSize.z) + 1)
-  return dimensions === 2 ? xCount * yCount : xCount * yCount * zCount
+  return xCount * yCount * zCount
 }
 
-function chooseGridLod(requestedLod, estimatedCount, limit, availableLods, dimensions = 3) {
+function chooseGridLod(requestedLod, estimatedCount, limit, availableLods) {
   const supportedLods = [...new Set([1, ...availableLods, ...GRID_LOD_LEVELS])]
     .filter((lod) => Number.isFinite(lod) && lod >= 1)
     .sort((a, b) => a - b)
@@ -160,7 +160,7 @@ function chooseGridLod(requestedLod, estimatedCount, limit, availableLods, dimen
   }
 
   for (const lod of supportedLods) {
-    if (estimatedCount / Math.pow(lod, dimensions) <= limit) return lod
+    if (estimatedCount / Math.pow(lod, 3) <= limit) return lod
   }
   return supportedLods.at(-1) || 1
 }
@@ -1128,16 +1128,12 @@ app.get('/api/grids/bbox', async (req, res) => {
     const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 6000, 80000))
     const requestedLod = req.query.lod || 'auto'
     const surfaceProjection = req.query.surface === '1' || req.query.surface === 'true'
-    const requestedZTarget = req.query.zTarget != null ? parseFloat(req.query.zTarget) : null
 
     if ([xMin, xMax, yMin, yMax].some((v) => !Number.isFinite(v))) {
       return res.status(400).json({ error: '缺少有效的 bbox 参数 (xMin,xMax,yMin,yMax)' })
     }
     if ((zMin != null && !Number.isFinite(zMin)) || (zMax != null && !Number.isFinite(zMax))) {
       return res.status(400).json({ error: '高度范围无效' })
-    }
-    if (requestedZTarget != null && !Number.isFinite(requestedZTarget)) {
-      return res.status(400).json({ error: '目标飞行高度无效' })
     }
     if (xMin > xMax || yMin > yMax || (zMin != null && zMax != null && zMin > zMax)) {
       return res.status(400).json({ error: 'bbox 参数范围无效，最小值不能大于最大值' })
@@ -1165,25 +1161,12 @@ app.get('/api/grids/bbox', async (req, res) => {
       })
     }
 
-    const zTarget = requestedZTarget ?? (
-      clipped.zMin != null && clipped.zMax != null
-        ? (clipped.zMin + clipped.zMax) / 2
-        : metadata.bounds.zMin
-    )
-    const surfaceThickness = Math.max(metadata.cellSize.z, 0.1)
-    const lodDimensions = surfaceProjection ? 2 : 3
-    const estimatedRawCount = estimateGridCount(clipped, metadata.cellSize, lodDimensions)
-    let lod = chooseGridLod(
-      requestedLod,
-      estimatedRawCount,
-      limit,
-      metadata.availableLods,
-      lodDimensions,
-    )
+    const estimatedRawCount = estimateGridCount(clipped, metadata.cellSize)
+    let lod = chooseGridLod(requestedLod, estimatedRawCount, limit, metadata.availableLods)
     const usePrecomputedLod = lod > 1 && metadata.availableLods.includes(lod)
     const bbox = alignGridBounds(clipped, metadata, lod)
 
-    const cacheKey = JSON.stringify({ bbox, lod, limit, scoreMin, scoreMax, surfaceProjection, zTarget })
+    const cacheKey = JSON.stringify({ bbox, clipped, lod, limit, scoreMin, scoreMax, surfaceProjection })
     const cached = getCachedGridResult(cacheKey)
     if (cached) {
       res.set('Cache-Control', 'private, max-age=15')
@@ -1200,8 +1183,8 @@ app.get('/api/grids/bbox', async (req, res) => {
           MAX(x_max) AS x_max,
           MIN(y_min) AS y_min,
           MAX(y_max) AS y_max,
-          $10::double precision - $11::double precision / 2 AS z_min,
-          $10::double precision + $11::double precision / 2 AS z_max,
+          MIN(z_min) AS z_min,
+          MAX(z_max) AS z_max,
           AVG(static_suitability_score) AS static_suitability_score,
           MIN(min_suitability_score) AS min_suitability_score,
           MAX(max_suitability_score) AS max_suitability_score,
@@ -1215,7 +1198,7 @@ app.get('/api/grids/bbox', async (req, res) => {
           AND ($9::double precision IS NULL OR static_suitability_score <= $9)
         GROUP BY x_min, x_max, y_min, y_max
         ORDER BY MIN(x_min), MIN(y_min)
-        LIMIT $12
+        LIMIT $10
         `,
         [
           lod,
@@ -1227,43 +1210,6 @@ app.get('/api/grids/bbox', async (req, res) => {
           bbox.zMax,
           scoreMin,
           scoreMax,
-          zTarget,
-          surfaceThickness,
-          limit,
-        ]
-      )
-    } else if (surfaceProjection && lod === 1) {
-      result = await pool.query(
-        `
-        SELECT
-          x_min, x_max, y_min, y_max,
-          $9::double precision - $10::double precision / 2 AS z_min,
-          $9::double precision + $10::double precision / 2 AS z_max,
-          AVG(static_suitability_score) AS static_suitability_score,
-          MIN(static_suitability_score) AS min_suitability_score,
-          MAX(static_suitability_score) AS max_suitability_score,
-          COUNT(*)::integer AS source_count
-        FROM nanjing_uni_3d_grid_new
-        WHERE x_min >= $1 AND x_min <= $2
-          AND y_min >= $3 AND y_min <= $4
-          AND z_min >= $5 AND z_min <= $6
-          AND ($7::double precision IS NULL OR static_suitability_score >= $7)
-          AND ($8::double precision IS NULL OR static_suitability_score <= $8)
-        GROUP BY x_min, x_max, y_min, y_max
-        ORDER BY x_min, y_min
-        LIMIT $11
-        `,
-        [
-          bbox.xMin - metadata.cellSize.x * 1.01,
-          bbox.xMax,
-          bbox.yMin - metadata.cellSize.y * 1.01,
-          bbox.yMax,
-          bbox.zMin - metadata.cellSize.z * 1.01,
-          bbox.zMax,
-          scoreMin,
-          scoreMax,
-          zTarget,
-          surfaceThickness,
           limit,
         ]
       )
@@ -1327,58 +1273,6 @@ app.get('/api/grids/bbox', async (req, res) => {
           limit,
         ]
       )
-    } else if (surfaceProjection) {
-      const bucketX = metadata.cellSize.x * lod
-      const bucketY = metadata.cellSize.y * lod
-      result = await pool.query(
-        `
-        WITH matched AS (
-          SELECT
-            x_min, x_max, y_min, y_max,
-            static_suitability_score,
-            FLOOR((x_min - $10) / $12)::integer AS gx,
-            FLOOR((y_min - $11) / $13)::integer AS gy
-          FROM nanjing_uni_3d_grid_new
-          WHERE x_min >= $1 AND x_min <= $2
-            AND y_min >= $3 AND y_min <= $4
-            AND z_min >= $5 AND z_min <= $6
-            AND ($7::double precision IS NULL OR static_suitability_score >= $7)
-            AND ($8::double precision IS NULL OR static_suitability_score <= $8)
-        )
-        SELECT
-          MIN(x_min) AS x_min,
-          MAX(x_max) AS x_max,
-          MIN(y_min) AS y_min,
-          MAX(y_max) AS y_max,
-          $14::double precision - $15::double precision / 2 AS z_min,
-          $14::double precision + $15::double precision / 2 AS z_max,
-          AVG(static_suitability_score) AS static_suitability_score,
-          MIN(static_suitability_score) AS min_suitability_score,
-          MAX(static_suitability_score) AS max_suitability_score,
-          COUNT(*) AS source_count
-        FROM matched
-        GROUP BY gx, gy
-        ORDER BY MIN(x_min), MIN(y_min)
-        LIMIT $9
-        `,
-        [
-          bbox.xMin - metadata.cellSize.x * lod * 1.01,
-          bbox.xMax,
-          bbox.yMin - metadata.cellSize.y * lod * 1.01,
-          bbox.yMax,
-          bbox.zMin - metadata.cellSize.z * lod * 1.01,
-          bbox.zMax,
-          scoreMin,
-          scoreMax,
-          limit,
-          metadata.bounds.xMin,
-          metadata.bounds.yMin,
-          bucketX,
-          bucketY,
-          zTarget,
-          surfaceThickness,
-        ]
-      )
     } else {
       const bucketX = metadata.cellSize.x * lod
       const bucketY = metadata.cellSize.y * lod
@@ -1439,7 +1333,14 @@ app.get('/api/grids/bbox', async (req, res) => {
       (sum, row) => sum + parseInt(row.source_count || 1, 10),
       0
     )
-    const data = result.rows.map(compactGridRow)
+    const data = result.rows
+      .map(compactGridRow)
+      .map((row) => ({
+        ...row,
+        z_min: Math.max(row.z_min, clipped.zMin),
+        z_max: Math.min(row.z_max, clipped.zMax),
+      }))
+      .filter((row) => row.z_max > row.z_min)
     const payload = {
       demo: false,
       bbox,
@@ -1450,7 +1351,6 @@ app.get('/api/grids/bbox', async (req, res) => {
       aggregated: lod > 1,
       dynamicAggregated: lod > 1 && !usePrecomputedLod,
       surfaceProjection,
-      zTarget: surfaceProjection ? zTarget : null,
       estimatedRawCount,
       truncated: result.rows.length === limit,
       queryMs: Date.now() - startedAt,

@@ -315,11 +315,11 @@
       </label>
       <label v-if="gridDisplayMode !== 'route-dynamic'" class="slider-label">
         高度下限 {{ gridZMin }}m
-        <input type="range" min="0" max="150" step="5" v-model.number="gridZMin" @change="reloadCurrentGridDisplay" />
+        <input type="range" min="0" :max="Math.max(0, gridZMax - 5)" step="5" v-model.number="gridZMin" @change="reloadCurrentGridDisplay" />
       </label>
       <label v-if="gridDisplayMode !== 'route-dynamic'" class="slider-label">
         高度上限 {{ gridZMax }}m
-        <input type="range" min="50" max="300" step="5" v-model.number="gridZMax" @change="reloadCurrentGridDisplay" />
+        <input type="range" :min="Math.min(300, gridZMin + 5)" max="300" step="5" v-model.number="gridZMax" @change="reloadCurrentGridDisplay" />
       </label>
       <label class="slider-label">
         适宜性筛选
@@ -357,7 +357,7 @@
       <p v-if="gridDisplayMode === 'route-dynamic' && gridAutoRefreshEnabled" class="hint dynamic-grid-hint">
         自动刷新{{ gridAutoRefreshError ? `异常：${gridAutoRefreshError}` : gridAutoRefreshNextAt ? `已开启 · 下次 ${formatGridTime(gridAutoRefreshNextAt)}` : '等待中' }}
       </p>
-      <p v-else class="hint">80m 飞行高度层 · 自动聚合远处格网 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
+      <p v-else class="hint">高度范围 {{ gridZMin }}–{{ gridZMax }}m · 自动聚合远处格网 · 数据库 {{ gridTotal.toLocaleString() }} 条</p>
       <div v-if="gridDynamicSummary && gridDisplayMode === 'route-dynamic'" class="grid-summary-card">
         <span>可通行 <strong>{{ gridDynamicSummary.passable }}/{{ gridDynamicSummary.total }}</strong></span>
         <span>阻断 <strong>{{ gridDynamicSummary.blocked }}</strong></span>
@@ -2183,36 +2183,11 @@ async function renderBatchInstances(instances, targetPrimitives) {
   targetPrimitives.push(primitive)
 }
 
-function getFlightLayerZRange() {
-  const fh = appConfig.grid?.flightHeight ?? planFlightHeight.value ?? 80
-  const tol = appConfig.grid?.layerTolerance ?? 20
-  const zTarget = fh - groundHeight.value
-  return {
-    zMin: Math.max(gridZMin.value, zTarget - tol),
-    zMax: Math.min(gridZMax.value, zTarget + tol),
-  }
-}
-
 function syncCampusModelTransparency() {
   if (!fallbackModelEntity?.model) return
   fallbackModelEntity.model.color = layers.heatmap
     ? Cesium.Color.WHITE.withAlpha(0.22)
     : Cesium.Color.WHITE
-}
-
-function filterGridByFlightLayer(gridDataList) {
-  if (appConfig.grid?.flightLayerOnly === false) return gridDataList
-  const fh = appConfig.grid?.flightHeight ?? planFlightHeight.value ?? 80
-  const tol = appConfig.grid?.layerTolerance ?? 20
-  const zTarget = fh - groundHeight.value
-  const filtered = gridDataList.filter((g) => {
-    const z1 = parseFloat(g.z_min)
-    const z2 = parseFloat(g.z_max)
-    if (Number.isNaN(z1) || Number.isNaN(z2)) return false
-    const zMid = (z1 + z2) / 2
-    return Math.abs(zMid - zTarget) <= tol
-  })
-  return filtered.length ? filtered : gridDataList
 }
 
 function scoreToColor(score) {
@@ -2644,9 +2619,7 @@ async function reloadGridsInView() {
     return
   }
 
-  const zRange = appConfig.grid?.flightLayerOnly !== false
-    ? getFlightLayerZRange()
-    : { zMin: gridZMin.value, zMax: gridZMax.value }
+  const zRange = { zMin: gridZMin.value, zMax: gridZMax.value }
 
   const requestVersion = ++gridRequestVersion
   gridAbortController?.abort()
@@ -2662,8 +2635,6 @@ async function reloadGridsInView() {
         ...bbox,
         zMin: String(zRange.zMin),
         zMax: String(zRange.zMax),
-        zTarget: String((zRange.zMin + zRange.zMax) / 2),
-        surface: appConfig.grid?.flightLayerOnly !== false ? '1' : '0',
         limit: String(bboxLimit.value),
         lod: 'auto',
         ...getGridScoreFilter(),
@@ -2687,7 +2658,7 @@ async function reloadGridsInView() {
       return
     }
 
-    const data = filterGridByFlightLayer(result.data || [])
+    const data = result.data || []
     const rendered = await replaceRenderedGrids(data, result, controller, requestVersion)
     if (!rendered) return
     gridDisplayMode.value = 'viewport-static'
@@ -2695,7 +2666,7 @@ async function reloadGridsInView() {
     gridDynamicSummary.value = null
 
     const mode = gridDemoMode.value ? '（演示）' : ''
-    const layerHint = appConfig.grid?.flightLayerOnly !== false ? ' · 飞行高度层' : ''
+    const layerHint = ` · 高度 ${zRange.zMin}–${zRange.zMax}m`
     const lodText = gridLod.value > 1 ? `，LOD ${gridLod.value} 聚合显示` : ''
     showStatus(`已加载视口内 ${data.length.toLocaleString()} 个格网${layerHint}${mode}${lodText}`)
   } catch (e) {
