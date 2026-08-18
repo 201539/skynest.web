@@ -66,61 +66,7 @@ function toNumber(value) {
 async function getGridMetadata() {
   if (gridMetadataPromise) return gridMetadataPromise
 
-  gridMetadataPromise = (async () => {
-    const statsResult = await pool.query(`
-      SELECT
-        COUNT(*) AS total,
-        MIN(x_min) AS x_min,
-        MAX(x_max) AS x_max,
-        MIN(y_min) AS y_min,
-        MAX(y_max) AS y_max,
-        MIN(z_min) AS z_min,
-        MAX(z_max) AS z_max,
-        MIN(x_max - x_min) AS step_x,
-        MIN(y_max - y_min) AS step_y,
-        MIN(z_max - z_min) AS step_z,
-        MIN(static_suitability_score) AS min_score,
-        MAX(static_suitability_score) AS max_score,
-        AVG(static_suitability_score) AS avg_score
-      FROM nanjing_uni_3d_grid_new
-    `)
-    const row = statsResult.rows[0]
-
-    let availableLods = []
-    try {
-      const lodResult = await pool.query(`
-        SELECT DISTINCT lod
-        FROM nanjing_uni_3d_grid_lod
-        ORDER BY lod
-      `)
-      availableLods = lodResult.rows
-        .map((item) => parseInt(item.lod, 10))
-        .filter((lod) => GRID_LOD_LEVELS.includes(lod))
-    } catch (e) {
-      console.warn('Grid LOD table is unavailable, falling back to raw grids:', e.message)
-    }
-
-    return {
-      total: parseInt(row.total, 10),
-      bounds: {
-        xMin: toNumber(row.x_min),
-        xMax: toNumber(row.x_max),
-        yMin: toNumber(row.y_min),
-        yMax: toNumber(row.y_max),
-        zMin: toNumber(row.z_min),
-        zMax: toNumber(row.z_max),
-      },
-      cellSize: {
-        x: toNumber(row.step_x),
-        y: toNumber(row.step_y),
-        z: toNumber(row.step_z),
-      },
-      minScore: toNumber(row.min_score),
-      maxScore: toNumber(row.max_score),
-      avgScore: toNumber(row.avg_score),
-      availableLods,
-    }
-  })().catch((e) => {
+  gridMetadataPromise = v3Database.getGridMetadata().catch((e) => {
     gridMetadataPromise = null
     throw e
   })
@@ -390,8 +336,8 @@ function generateDemoGrids(bbox, limit = 800) {
 
 app.get('/api/health', async (_req, res) => {
   try {
-    await pool.query('SELECT 1')
-    res.json({ ok: true, database: 'connected' })
+    const status = await v3Database.getStatus()
+    res.json({ ok: status.ok, database: status.database, grid_source: 'v3' })
   } catch (e) {
     res.status(503).json({ ok: false, database: 'disconnected', error: e.message })
   }
@@ -1163,7 +1109,6 @@ app.get('/api/grids/bbox', async (req, res) => {
 
     const estimatedRawCount = estimateGridCount(clipped, metadata.cellSize)
     let lod = chooseGridLod(requestedLod, estimatedRawCount, limit, metadata.availableLods)
-    const usePrecomputedLod = lod > 1 && metadata.availableLods.includes(lod)
     const bbox = alignGridBounds(clipped, metadata, lod)
 
     const cacheKey = JSON.stringify({ bbox, clipped, lod, limit, scoreMin, scoreMax, surfaceProjection })
@@ -1174,166 +1119,25 @@ app.get('/api/grids/bbox', async (req, res) => {
     }
 
     const startedAt = Date.now()
-    let result
-    if (surfaceProjection && usePrecomputedLod) {
-      result = await pool.query(
-        `
-        SELECT
-          MIN(x_min) AS x_min,
-          MAX(x_max) AS x_max,
-          MIN(y_min) AS y_min,
-          MAX(y_max) AS y_max,
-          MIN(z_min) AS z_min,
-          MAX(z_max) AS z_max,
-          AVG(static_suitability_score) AS static_suitability_score,
-          MIN(min_suitability_score) AS min_suitability_score,
-          MAX(max_suitability_score) AS max_suitability_score,
-          SUM(source_count)::integer AS source_count
-        FROM nanjing_uni_3d_grid_lod
-        WHERE lod = $1
-          AND x_min >= $2 AND x_min <= $3
-          AND y_min >= $4 AND y_min <= $5
-          AND z_min >= $6 AND z_min <= $7
-          AND ($8::double precision IS NULL OR static_suitability_score >= $8)
-          AND ($9::double precision IS NULL OR static_suitability_score <= $9)
-        GROUP BY x_min, x_max, y_min, y_max
-        ORDER BY MIN(x_min), MIN(y_min)
-        LIMIT $10
-        `,
-        [
-          lod,
-          bbox.xMin - metadata.cellSize.x * lod * 1.01,
-          bbox.xMax,
-          bbox.yMin - metadata.cellSize.y * lod * 1.01,
-          bbox.yMax,
-          bbox.zMin - metadata.cellSize.z * lod * 1.01,
-          bbox.zMax,
-          scoreMin,
-          scoreMax,
-          limit,
-        ]
-      )
-    } else if (lod === 1) {
-      result = await pool.query(
-        `
-        SELECT
-          x_min, x_max, y_min, y_max, z_min, z_max,
-          static_suitability_score,
-          1 AS source_count
-        FROM nanjing_uni_3d_grid_new
-        WHERE x_min >= $1 AND x_min <= $2
-          AND y_min >= $3 AND y_min <= $4
-          AND z_min >= $5 AND z_min <= $6
-          AND ($7::double precision IS NULL OR static_suitability_score >= $7)
-          AND ($8::double precision IS NULL OR static_suitability_score <= $8)
-        ORDER BY x_min, y_min, z_min
-        LIMIT $9
-        `,
-        [
-          bbox.xMin - metadata.cellSize.x * 1.01,
-          bbox.xMax,
-          bbox.yMin - metadata.cellSize.y * 1.01,
-          bbox.yMax,
-          bbox.zMin - metadata.cellSize.z * 1.01,
-          bbox.zMax,
-          scoreMin,
-          scoreMax,
-          limit,
-        ]
-      )
-    } else if (usePrecomputedLod) {
-      result = await pool.query(
-        `
-        SELECT
-          x_min, x_max, y_min, y_max, z_min, z_max,
-          static_suitability_score,
-          min_suitability_score,
-          max_suitability_score,
-          source_count
-        FROM nanjing_uni_3d_grid_lod
-        WHERE lod = $1
-          AND x_min >= $2 AND x_min <= $3
-          AND y_min >= $4 AND y_min <= $5
-          AND z_min >= $6 AND z_min <= $7
-          AND ($8::double precision IS NULL OR static_suitability_score >= $8)
-          AND ($9::double precision IS NULL OR static_suitability_score <= $9)
-        ORDER BY x_min, y_min, z_min
-        LIMIT $10
-        `,
-        [
-          lod,
-          bbox.xMin - metadata.cellSize.x * lod * 1.01,
-          bbox.xMax,
-          bbox.yMin - metadata.cellSize.y * lod * 1.01,
-          bbox.yMax,
-          bbox.zMin - metadata.cellSize.z * lod * 1.01,
-          bbox.zMax,
-          scoreMin,
-          scoreMax,
-          limit,
-        ]
-      )
-    } else {
-      const bucketX = metadata.cellSize.x * lod
-      const bucketY = metadata.cellSize.y * lod
-      const bucketZ = metadata.cellSize.z * lod
-      result = await pool.query(
-        `
-        WITH matched AS (
-          SELECT
-            x_min, x_max, y_min, y_max, z_min, z_max,
-            static_suitability_score,
-            FLOOR((x_min - $10) / $13)::integer AS gx,
-            FLOOR((y_min - $11) / $14)::integer AS gy,
-            FLOOR((z_min - $12) / $15)::integer AS gz
-          FROM nanjing_uni_3d_grid_new
-          WHERE x_min >= $1 AND x_min <= $2
-            AND y_min >= $3 AND y_min <= $4
-            AND z_min >= $5 AND z_min <= $6
-            AND ($7::double precision IS NULL OR static_suitability_score >= $7)
-            AND ($8::double precision IS NULL OR static_suitability_score <= $8)
-        )
-        SELECT
-          MIN(x_min) AS x_min,
-          MAX(x_max) AS x_max,
-          MIN(y_min) AS y_min,
-          MAX(y_max) AS y_max,
-          MIN(z_min) AS z_min,
-          MAX(z_max) AS z_max,
-          AVG(static_suitability_score) AS static_suitability_score,
-          MIN(static_suitability_score) AS min_suitability_score,
-          MAX(static_suitability_score) AS max_suitability_score,
-          COUNT(*) AS source_count
-        FROM matched
-        GROUP BY gx, gy, gz
-        ORDER BY MIN(x_min), MIN(y_min), MIN(z_min)
-        LIMIT $9
-        `,
-        [
-          bbox.xMin - metadata.cellSize.x * lod * 1.01,
-          bbox.xMax,
-          bbox.yMin - metadata.cellSize.y * lod * 1.01,
-          bbox.yMax,
-          bbox.zMin - metadata.cellSize.z * lod * 1.01,
-          bbox.zMax,
-          scoreMin,
-          scoreMax,
-          limit,
-          metadata.bounds.xMin,
-          metadata.bounds.yMin,
-          metadata.bounds.zMin,
-          bucketX,
-          bucketY,
-          bucketZ,
-        ]
-      )
-    }
+    const rows = await v3Database.listGridCells({
+      ...bbox,
+      lod,
+      limit,
+      scoreMin,
+      scoreMax,
+      originX: metadata.bounds.xMin,
+      originY: metadata.bounds.yMin,
+      originZ: metadata.bounds.zMin,
+      cellSizeX: metadata.cellSize.x,
+      cellSizeY: metadata.cellSize.y,
+      cellSizeZ: metadata.cellSize.z,
+    })
 
-    const sourceCount = result.rows.reduce(
+    const sourceCount = rows.reduce(
       (sum, row) => sum + parseInt(row.source_count || 1, 10),
       0
     )
-    const data = result.rows
+    const data = rows
       .map(compactGridRow)
       .map((row) => ({
         ...row,
@@ -1349,10 +1153,12 @@ app.get('/api/grids/bbox', async (req, res) => {
       limit,
       lod,
       aggregated: lod > 1,
-      dynamicAggregated: lod > 1 && !usePrecomputedLod,
+      dynamicAggregated: lod > 1,
+      source: 'v3',
+      database: process.env.PG_V3_DATABASE || v3Database.DEFAULT_DATABASE,
       surfaceProjection,
       estimatedRawCount,
-      truncated: result.rows.length === limit,
+      truncated: rows.length === limit,
       queryMs: Date.now() - startedAt,
       data,
     }

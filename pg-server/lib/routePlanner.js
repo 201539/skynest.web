@@ -478,9 +478,9 @@ function snapToNode(lng, lat, bbox, cols, rows) {
   return { c, r, idx: idx(c, r, cols) }
 }
 
-function findNearestPassable(passable, cols, rows, c0, r0) {
+function findNearestPassable(passable, cols, rows, c0, r0, maxRadius = Math.max(cols, rows)) {
   if (passable[idx(c0, r0, cols)]) return idx(c0, r0, cols)
-  const maxR = Math.max(cols, rows)
+  const maxR = Math.min(Math.max(cols, rows), Math.max(0, maxRadius))
   for (let radius = 1; radius <= maxR; radius++) {
     for (let dc = -radius; dc <= radius; dc++) {
       for (let dr = -radius; dr <= radius; dr++) {
@@ -493,7 +493,12 @@ function findNearestPassable(passable, cols, rows, c0, r0) {
       }
     }
   }
-  return idx(c0, r0, cols)
+  return null
+}
+
+function canSnapBuildingEndpoint(result) {
+  const constraints = result?.hard_constraints || []
+  return constraints.length > 0 && constraints.every((constraint) => constraint === 'building_occupied')
 }
 
 function nodeToLngLat(nodeIndex, bbox, cols, rows) {
@@ -764,11 +769,13 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
 
   const startSnap = snapToNode(start.lng, start.lat, searchBBox, cols, rows)
   const endSnap = snapToNode(end.lng, end.lat, searchBBox, cols, rows)
-  if (!passable[startSnap.idx] || !passable[endSnap.idx]) {
+  const startCanSnap = passable[startSnap.idx] || canSnapBuildingEndpoint(resultByNode[startSnap.idx])
+  const endCanSnap = passable[endSnap.idx] || canSnapBuildingEndpoint(resultByNode[endSnap.idx])
+  if (!startCanSnap || !endCanSnap) {
     const error = new Error('航线起点或终点位于当前硬约束区域内')
     error.code = 'NO_SAFE_ROUTE'
     error.details = {
-      endpoint: !passable[startSnap.idx] ? 'start' : 'end',
+      endpoint: !startCanSnap ? 'start' : 'end',
       start_constraints: resultByNode[startSnap.idx]?.hard_constraints || [],
       end_constraints: resultByNode[endSnap.idx]?.hard_constraints || [],
       cost_summary: dynamicCost.summarizeCosts(costResults),
@@ -776,8 +783,20 @@ async function planRoute(pool, start, end, options = {}, generateDemoGrids) {
     }
     throw error
   }
-  const startNode = findNearestPassable(passable, cols, rows, startSnap.c, startSnap.r)
-  const endNode = findNearestPassable(passable, cols, rows, endSnap.c, endSnap.r)
+  const startNode = findNearestPassable(passable, cols, rows, startSnap.c, startSnap.r, 4)
+  const endNode = findNearestPassable(passable, cols, rows, endSnap.c, endSnap.r, 4)
+  if (startNode == null || endNode == null) {
+    const error = new Error('L3运输节点附近未找到可安全起降的格网')
+    error.code = 'NO_SAFE_ROUTE'
+    error.details = {
+      endpoint: startNode == null ? 'start' : 'end',
+      start_constraints: resultByNode[startSnap.idx]?.hard_constraints || [],
+      end_constraints: resultByNode[endSnap.idx]?.hard_constraints || [],
+      cost_summary: dynamicCost.summarizeCosts(costResults),
+      search_bbox: searchBBox,
+    }
+    throw error
+  }
   const pathNodes = astar(
     passable,
     costs,

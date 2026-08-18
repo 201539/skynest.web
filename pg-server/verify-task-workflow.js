@@ -69,7 +69,7 @@ async function main() {
     assert.equal(approved.route.planning_context.cost_weights.distance, 1)
     assert.equal(approved.route.planning_context.cost_weights.maneuver, 1)
     assert.equal(approved.route.planning_context.access_points.departure.building_name, '杜厦图书馆')
-    assert.match(approved.route.planning_context.access_points.departure.node_code, /^(hub|[a-e])$/)
+    assert.match(approved.route.planning_context.access_points.departure.node_code, /^[A-G]$/)
     assert.equal(approved.route.planning_context.access_points.receiving.building_name, '行政南楼')
     assert.match(approved.route.planning_context.access_points.receiving.node_code, /^[A-G]$/)
 

@@ -3,6 +3,8 @@ const LOCATION_ALIASES = Object.freeze({
   行政楼: ['行政南楼'],
   体育馆: ['方肇周体育馆'],
   实验楼: ['实验中心'],
+  二期实验楼: ['基础实验楼'],
+  二期校区实验楼: ['基础实验楼'],
 })
 
 function normalizeLocationName(value) {

@@ -141,6 +141,40 @@ async function getSummary() {
   }))
 }
 
+async function getGridMetadata() {
+  const result = await pool.query(`
+    SELECT
+      COUNT(*)::bigint AS total,
+      MIN(x_min) AS x_min, MAX(x_max) AS x_max,
+      MIN(y_min) AS y_min, MAX(y_max) AS y_max,
+      MIN(z_min) AS z_min, MAX(z_max) AS z_max,
+      MIN(x_max - x_min) AS step_x,
+      MIN(y_max - y_min) AS step_y,
+      MIN(z_max - z_min) AS step_z,
+      MIN(static_suitability_score) AS min_score,
+      MAX(static_suitability_score) AS max_score,
+      AVG(static_suitability_score) AS avg_score
+    FROM static.grid_3d
+  `)
+  const row = result.rows[0]
+  const number = (value) => value == null ? null : Number(value)
+  return {
+    total: Number(row.total),
+    bounds: {
+      xMin: number(row.x_min), xMax: number(row.x_max),
+      yMin: number(row.y_min), yMax: number(row.y_max),
+      zMin: number(row.z_min), zMax: number(row.z_max),
+    },
+    cellSize: {
+      x: number(row.step_x), y: number(row.step_y), z: number(row.step_z),
+    },
+    minScore: number(row.min_score),
+    maxScore: number(row.max_score),
+    avgScore: number(row.avg_score),
+    availableLods: [],
+  }
+}
+
 async function listFixedNodes(options = {}) {
   const limit = clampLimit(options.limit, 100, 1000)
   const offset = Math.max(Number.parseInt(options.offset, 10) || 0, 0)
@@ -152,9 +186,8 @@ async function listFixedNodes(options = {}) {
         ST_Y(ST_Transform(location, 4326)) AS lat,
         grid_code, capacity, status, description, created_at, updated_at,
         CASE
-          WHEN node_code = 'hub' OR node_code ~ '^[a-e]$' THEN 'departure'
-          WHEN node_code ~ '^[A-G]$' THEN 'receiving'
-          ELSE 'other'
+          WHEN node_code ~ '^[A-G]$' THEN 'student_access'
+          ELSE 'infrastructure'
         END AS service_group
       FROM static.fixed_nodes
       WHERE ($1::text IS NULL OR node_type = $1)
@@ -280,17 +313,16 @@ async function listBuildingNearestNodes(buildingName, options = {}) {
         n.grid_code, n.capacity, n.status, n.description,
         d.distance_m,
         CASE
-          WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
-          WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
-          ELSE 'other'
+          WHEN $2 IN ('departure', 'receiving') THEN $2
+          WHEN n.node_code ~ '^[A-G]$' THEN 'student_access'
+          ELSE 'infrastructure'
         END AS service_group
       FROM static.building_node_distance d
       JOIN static.fixed_nodes n ON n.node_code = d.node_code
       WHERE d.building_name = $1
         AND (
           $2 = 'all'
-          OR ($2 = 'departure' AND (n.node_code = 'hub' OR n.node_code ~ '^[a-e]$'))
-          OR ($2 = 'receiving' AND n.node_code ~ '^[A-G]$')
+          OR ($2 IN ('departure', 'receiving') AND n.node_code ~ '^[A-G]$')
         )
       ORDER BY d.distance_m, n.node_id
       LIMIT $3
@@ -318,36 +350,26 @@ async function getBuildingAccessPoints(buildingName, options = {}) {
           ST_Y(ST_Transform(n.location, 4326)) AS lat,
           n.grid_code, n.capacity, n.status, n.description,
           d.distance_m,
-          CASE
-            WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
-            WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
-            ELSE 'other'
-          END AS service_group,
-          ROW_NUMBER() OVER (
-            PARTITION BY CASE
-              WHEN n.node_code = 'hub' OR n.node_code ~ '^[a-e]$' THEN 'departure'
-              WHEN n.node_code ~ '^[A-G]$' THEN 'receiving'
-              ELSE 'other'
-            END
-            ORDER BY d.distance_m, n.node_id
-          ) AS group_rank
+          'student_access'::text AS service_group,
+          ROW_NUMBER() OVER (ORDER BY d.distance_m, n.node_id) AS group_rank
         FROM static.building_node_distance d
         JOIN static.fixed_nodes n ON n.node_code = d.node_code
         WHERE d.building_name = $1
+          AND n.status = 'active'
+          AND n.node_code ~ '^[A-G]$'
       )
       SELECT *
       FROM ranked
-      WHERE service_group IN ('departure', 'receiving')
-        AND group_rank <= $2
-      ORDER BY service_group, group_rank
+      WHERE group_rank <= $2
+      ORDER BY group_rank
     `,
     [name, clampLimit(options.limitPerGroup, 3, 13)]
   )
   const normalized = result.rows.map((row) => normalizeNodeDistanceRow(row))
   return {
     building,
-    departure_nodes: normalized.filter((node) => node.service_group === 'departure'),
-    receiving_nodes: normalized.filter((node) => node.service_group === 'receiving'),
+    departure_nodes: normalized.map((node) => ({ ...node, service_group: 'departure' })),
+    receiving_nodes: normalized.map((node) => ({ ...node, service_group: 'receiving' })),
   }
 }
 
@@ -422,25 +444,79 @@ async function listGridCells(options = {}) {
     throw new RangeError('bbox minimum values cannot exceed maximum values')
   }
 
-  const limit = clampLimit(options.limit, 5000, 20000)
-  const result = await pool.query(
-    `
-      SELECT
-        new_id, grid_code,
-        x_min, x_max, y_min, y_max, z_min, z_max,
-        has_building, pop, building_class, sensitivity_level, privacy_level,
-        static_suitability_score, building_evaluation_score
-      FROM static.grid_3d
-      WHERE geomm && ST_MakeEnvelope($1, $3, $2, $4, 4490)
-        AND x_max >= $1 AND x_min <= $2
-        AND y_max >= $3 AND y_min <= $4
-        AND ($5::double precision IS NULL OR z_max >= $5)
-        AND ($6::double precision IS NULL OR z_min <= $6)
-      ORDER BY x_min, y_min, z_min
-      LIMIT $7
-    `,
-    [xMin, xMax, yMin, yMax, zMin, zMax, limit]
-  )
+  const limit = clampLimit(options.limit, 5000, 80000)
+  const lod = Math.max(1, Math.floor(optionalNumber(options.lod, 'lod') || 1))
+  const scoreMin = optionalNumber(options.scoreMin, 'scoreMin')
+  const scoreMax = optionalNumber(options.scoreMax, 'scoreMax')
+  let result
+
+  if (lod === 1) {
+    result = await pool.query(
+      `
+        SELECT
+          new_id, grid_code,
+          x_min, x_max, y_min, y_max, z_min, z_max,
+          has_building, pop, building_class, sensitivity_level, privacy_level,
+          static_suitability_score, building_evaluation_score,
+          1::integer AS source_count
+        FROM static.grid_3d
+        WHERE x_max >= $1 AND x_min <= $2
+          AND y_max >= $3 AND y_min <= $4
+          AND ($5::double precision IS NULL OR z_max >= $5)
+          AND ($6::double precision IS NULL OR z_min <= $6)
+          AND ($7::double precision IS NULL OR static_suitability_score >= $7)
+          AND ($8::double precision IS NULL OR static_suitability_score <= $8)
+        ORDER BY x_min, y_min, z_min
+        LIMIT $9
+      `,
+      [xMin, xMax, yMin, yMax, zMin, zMax, scoreMin, scoreMax, limit]
+    )
+  } else {
+    const originX = requiredNumber(options.originX, 'originX')
+    const originY = requiredNumber(options.originY, 'originY')
+    const originZ = requiredNumber(options.originZ, 'originZ')
+    const bucketX = requiredNumber(options.cellSizeX, 'cellSizeX') * lod
+    const bucketY = requiredNumber(options.cellSizeY, 'cellSizeY') * lod
+    const bucketZ = requiredNumber(options.cellSizeZ, 'cellSizeZ') * lod
+    result = await pool.query(
+      `
+        WITH matched AS (
+          SELECT
+            x_min, x_max, y_min, y_max, z_min, z_max,
+            static_suitability_score,
+            FLOOR((x_min - $10) / $13)::integer AS gx,
+            FLOOR((y_min - $11) / $14)::integer AS gy,
+            FLOOR((z_min - $12) / $15)::integer AS gz
+          FROM static.grid_3d
+          WHERE x_max >= $1 AND x_min <= $2
+            AND y_max >= $3 AND y_min <= $4
+            AND ($5::double precision IS NULL OR z_max >= $5)
+            AND ($6::double precision IS NULL OR z_min <= $6)
+            AND ($7::double precision IS NULL OR static_suitability_score >= $7)
+            AND ($8::double precision IS NULL OR static_suitability_score <= $8)
+        )
+        SELECT
+          MIN(x_min) AS x_min,
+          MAX(x_max) AS x_max,
+          MIN(y_min) AS y_min,
+          MAX(y_max) AS y_max,
+          MIN(z_min) AS z_min,
+          MAX(z_max) AS z_max,
+          AVG(static_suitability_score) AS static_suitability_score,
+          MIN(static_suitability_score) AS min_suitability_score,
+          MAX(static_suitability_score) AS max_suitability_score,
+          COUNT(*)::integer AS source_count
+        FROM matched
+        GROUP BY gx, gy, gz
+        ORDER BY MIN(x_min), MIN(y_min), MIN(z_min)
+        LIMIT $9
+      `,
+      [
+        xMin, xMax, yMin, yMax, zMin, zMax, scoreMin, scoreMax, limit,
+        originX, originY, originZ, bucketX, bucketY, bucketZ,
+      ]
+    )
+  }
   return result.rows
 }
 
@@ -781,6 +857,7 @@ module.exports = {
   READ_ONLY,
   getStatus,
   getSummary,
+  getGridMetadata,
   listFixedNodes,
   listBuildings,
   searchBuildings,

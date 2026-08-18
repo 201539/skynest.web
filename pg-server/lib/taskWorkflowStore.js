@@ -5,6 +5,7 @@ const routeStore = require('./routeStore')
 const placeResolver = require('./placeResolver')
 const auditStore = require('./auditStore')
 const routeExplanationService = require('./routeExplanationService')
+const routeAgentExplanationService = require('../llm/routeAgentExplanationService')
 const { getV3DatabaseConfig } = require('./databaseConfig')
 
 const TIME_ZONE = process.env.SKYNEST_TIME_ZONE || 'Asia/Shanghai'
@@ -196,6 +197,11 @@ function normalizeRoute(row) {
     generated_at: row.route_created_at,
     status: row.route_status,
     route_type: row.route_type,
+    change_trigger: row.change_trigger || null,
+    agent_explanation: row.agent_explanation || null,
+    explanation_status: row.explanation_status || 'pending',
+    explanation_generated_at: row.explanation_generated_at || null,
+    explanation_error: row.explanation_error || null,
     is_current: Boolean(row.is_current),
     planning_context: planningContext,
     cost_breakdown: row.cost_breakdown || null,
@@ -209,7 +215,8 @@ const WORKSPACE_QUERY = `
     t.*,
     a.approval_id, a.action, a.approver, a.comment, a.created_at AS approval_created_at,
     r.route_id, r.route_type, r.waypoints, r.main_risk_factors, r.avoided_zones,
-    r.distance_m, r.distance_change_percent, r.risk_change_percent, r.cost,
+    r.distance_m, r.distance_change_percent, r.risk_change_percent, r.cost, r.change_trigger,
+    r.agent_explanation, r.explanation_status, r.explanation_generated_at, r.explanation_error,
     r.algorithm, r.cost_model, r.planning_context, r.cost_breakdown, r.status AS route_status,
     r.is_current, r.created_at AS route_created_at,
     d.drone_code, d.model AS drone_model, d.vehicle_class AS drone_vehicle_class,
@@ -507,6 +514,9 @@ async function createApprovedRoute(task, client, options = {}) {
     planningAt: plan.dynamicCost?.sampledAt,
     timeZone: options.timeZone || TIME_ZONE,
   }, { client })
+  if (persisted?.route_id) {
+    await routeAgentExplanationService.generateAndStore(client, persisted.route_id, task, plan, places)
+  }
   return { plan, persisted, places }
 }
 

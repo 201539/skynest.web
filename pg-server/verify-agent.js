@@ -6,6 +6,7 @@ const taskAgentService = require('./agent/agentService')
 const { matchLocation } = require('./agent/locationMatcher')
 const { validateAgentOutput } = require('./llm/outputSchema')
 const { buildAgentContext } = require('./llm/agentContext')
+const { parseNaturalLanguageTask } = require('./agent/taskParser')
 
 async function main() {
   const parsed = await taskAgentService.parseInput(
@@ -22,10 +23,23 @@ async function main() {
   assert.equal(parsed.agent_analysis.data_source, 'v3_static_buildings+distance_matrix+rules')
   assert.equal(parsed.agent_analysis.location_matches.origin.selected_building.name, '环境学院')
   assert.equal(parsed.agent_analysis.location_matches.destination.match_method, 'exact')
-  assert.equal(parsed.agent_analysis.access_point_plan.departure.node_code, 'c')
+  assert.match(parsed.agent_analysis.access_point_plan.departure.node_code, /^[A-G]$/)
   assert.equal(parsed.agent_analysis.access_point_plan.receiving.node_code, 'C')
   assert.ok(parsed.candidate_node_ids.length > 0)
-  assert.equal(parsed.agent_analysis.ai.mode, 'deterministic_fallback')
+  assert.ok(
+    ['deterministic_fallback', 'local_llm', 'cloud_llm'].includes(parsed.agent_analysis.ai.mode),
+    'Agent解释来源必须是规则降级、本地模型或云端模型之一',
+  )
+
+  const tolerant = parseNaturalLanguageTask(
+    '明天下午4点前，从环境学院到基础实验楼送500克文件，不用防震。',
+    { now: new Date('2026-08-12T02:00:00Z'), placeNames: ['环境学院', '基础实验楼'] },
+  )
+  assert.equal(tolerant.origin, '环境学院')
+  assert.equal(tolerant.destination, '基础实验楼')
+  assert.equal(tolerant.weight_kg, 0.5)
+  assert.equal(tolerant.deadline, '2026-08-13T16:00:00+08:00')
+  assert.deepEqual(tolerant.special_requirements, [])
 
   const tampered = await taskAgentService.verifyStructuredTask({
     origin: '杜厦图书馆',

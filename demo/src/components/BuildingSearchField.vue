@@ -93,7 +93,7 @@ const suggestionsSummary = computed(() => {
   return `容错匹配 ${suggestions.value.length} 栋 · 建筑库共 ${total} 栋`
 })
 
-const accessRoleLabel = computed(() => props.accessRole === 'receiving' ? 'L3接驳箱' : '起飞节点')
+const accessRoleLabel = computed(() => props.accessRole === 'receiving' ? '收货L3三级运输节点' : '放货L3三级运输节点')
 
 function handleInput(event) {
   const value = event.target.value

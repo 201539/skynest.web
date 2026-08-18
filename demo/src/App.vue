@@ -253,8 +253,8 @@
       <p class="hint">已从 V3 数据库加载 {{ campusPlaces.length }} 栋建筑、{{ officialFixedNodes.length }} 个三级运输节点，名称和坐标已锁定。</p>
       <div class="official-node-summary">
         <span>L1枢纽 <strong>{{ officialNodeSummary.l1 }}</strong></span>
-        <span>L2机巢 <strong>{{ officialNodeSummary.l2 }}</strong></span>
-        <span>L3接驳箱 <strong>{{ officialNodeSummary.l3 }}</strong></span>
+        <span>L2运输节点 <strong>{{ officialNodeSummary.l2 }}</strong></span>
+        <span>L3师生运输节点 <strong>{{ officialNodeSummary.l3 }}</strong></span>
       </div>
     </section>
 
@@ -274,7 +274,7 @@
         </div>
       </template>
       <template v-else>
-        <strong class="official-feature-name">{{ fixedNodeLevelLabel(selectedOfficialFeature) }} · {{ selectedOfficialFeature.node_name }}</strong>
+        <strong class="official-feature-name">{{ fixedNodeLevelLabel(selectedOfficialFeature) }} · {{ officialNodeDisplayName(selectedOfficialFeature) }}</strong>
         <p class="hint">编号：{{ selectedOfficialFeature.node_code }} · {{ fixedNodeServiceLabel(selectedOfficialFeature) }}</p>
         <p class="hint">坐标：{{ formatOfficialCoordinate(selectedOfficialFeature.location) }}</p>
         <p class="hint">容量：{{ selectedOfficialFeature.capacity }} · 状态：{{ selectedOfficialFeature.status === 'active' ? '可用' : selectedOfficialFeature.status }}</p>
@@ -935,7 +935,15 @@ function fixedNodeLevel(node) {
 }
 
 function fixedNodeLevelLabel(node) {
-  return ({ L1: 'L1综合枢纽', L2: 'L2起飞机巢', L3: 'L3接驳箱' })[fixedNodeLevel(node)] || '运输节点'
+  return ({ L1: 'L1综合枢纽', L2: 'L2运输节点', L3: 'L3师生运输节点' })[fixedNodeLevel(node)] || '运输节点'
+}
+
+function officialNodeDisplayName(node) {
+  const level = fixedNodeLevel(node)
+  if (level === 'L1') return '校园综合运输枢纽'
+  if (level === 'L2') return `${node.node_code}-L2运输节点`
+  if (level === 'L3') return `${node.node_code}-L3三级运输节点`
+  return node?.node_name || '运输节点'
 }
 
 function fixedNodeServiceLabel(node) {
@@ -1869,7 +1877,7 @@ async function planSmartRoute() {
       ])
       routeStart = startAccess.departure_nodes?.[0]
       routeEnd = endAccess.receiving_nodes?.[0]
-      if (!routeStart || !routeEnd) throw new Error('未找到可用的起飞节点或L3接驳箱')
+      if (!routeStart || !routeEnd) throw new Error('未找到起点或终点对应的可用L3三级运输节点')
       const startLocation = routeStart.location || routeStart
       const endLocation = routeEnd.location || routeEnd
       searchBBox = computeLocalSearchBbox(startLocation, endLocation)
@@ -3468,7 +3476,7 @@ function createOfficialNodeDataSource() {
     officialFeatureByEntityId.set(id, feature)
     source.entities.add({
       id,
-      name: node.node_name,
+      name: officialNodeDisplayName(node),
       position: Cesium.Cartesian3.fromDegrees(Number(node.location.lng), Number(node.location.lat), 12),
       point: {
         pixelSize: highlighted ? 18 : fixedNodeLevel(node) === 'L1' ? 16 : 13,
@@ -3555,7 +3563,7 @@ function focusOfficialFeature(feature, options = {}) {
     orientation: { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
     duration: 1,
   })
-  if (!options.silent) showStatus(`已定位：${feature.kind === 'node' ? feature.node_name : feature.name}`, 3000)
+  if (!options.silent) showStatus(`已定位：${feature.kind === 'node' ? officialNodeDisplayName(feature) : feature.name}`, 3000)
 }
 
 function setOfficialBuildingEndpoint(feature, endpoint) {

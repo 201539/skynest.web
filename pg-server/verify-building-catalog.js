@@ -68,9 +68,9 @@ async function main() {
     assert.ok(fixedNodes.every((node) => (
       Number.isFinite(Number(node.location?.lng))
       && Number.isFinite(Number(node.location?.lat))
-      && (node.node_code === 'hub' || /^[a-e]$/.test(node.node_code)
-        ? node.service_group === 'departure'
-        : node.service_group === 'receiving')
+      && (/^[A-G]$/.test(node.node_code)
+        ? node.service_group === 'student_access'
+        : node.service_group === 'infrastructure')
     )))
 
     const search = await v3Database.searchBuildings('图书馆')
@@ -80,6 +80,12 @@ async function main() {
     assert.equal(access.building.building_name, '环境学院')
     assert.equal(access.departure_nodes.length, 3)
     assert.equal(access.receiving_nodes.length, 3)
+    assert.ok(access.departure_nodes.every((node) => /^[A-G]$/.test(node.node_code)))
+    assert.ok(access.receiving_nodes.every((node) => /^[A-G]$/.test(node.node_code)))
+    assert.deepEqual(
+      access.departure_nodes.map((node) => node.node_code),
+      access.receiving_nodes.map((node) => node.node_code),
+    )
     assert.ok(access.departure_nodes.every((node, index, nodes) => (
       index === 0 || Number(nodes[index - 1].distance_m) <= Number(node.distance_m)
     )))

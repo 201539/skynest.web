@@ -44,6 +44,16 @@ const ITEM_CATEGORY_RULES = [
     keywords: ['餐食', '外卖', '食品', '饮品'],
     manualReview: false,
   },
+  {
+    category: 'daily_item',
+    keywords: ['日用小件', '日用品', '生活用品', '小件'],
+    manualReview: false,
+  },
+  {
+    category: 'valuable_equipment',
+    keywords: ['高价值设备', '贵重设备', '精密仪器', '电子设备'],
+    manualReview: true,
+  },
 ]
 
 const ITEM_CATEGORIES = Object.freeze([
@@ -70,6 +80,8 @@ const CATEGORY_TO_V3 = Object.freeze({
   biological_material: '生物材料',
   hazardous_chemical: '危险化学品',
   flammable_explosive: '危险化学品',
+  daily_item: '日用小件',
+  valuable_equipment: '高价值设备',
 })
 
 const REQUIREMENT_TO_V3 = Object.freeze({
@@ -88,7 +100,7 @@ const SPECIAL_REQUIREMENT_RULES = [
   { keyword: '防水', value: 'waterproof' },
 ]
 
-function getShanghaiDate(now = new Date()) {
+function getShanghaiDate(now = new Date(), dayOffset = 0) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -100,7 +112,8 @@ function getShanghaiDate(now = new Date()) {
     parts.map((part) => [part.type, part.value]),
   )
 
-  return `${values.year}-${values.month}-${values.day}`
+  const shifted = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day) + dayOffset))
+  return [shifted.getUTCFullYear(), String(shifted.getUTCMonth() + 1).padStart(2, '0'), String(shifted.getUTCDate()).padStart(2, '0')].join('-')
 }
 
 function chineseNumberToInteger(value) {
@@ -114,15 +127,9 @@ function chineseNumberToInteger(value) {
   return digits[value]
 }
 
-function shanghaiDateWithOffset(now, dayOffset) {
-  const date = new Date(`${getShanghaiDate(now)}T12:00:00+08:00`)
-  date.setUTCDate(date.getUTCDate() + dayOffset)
-  return getShanghaiDate(date)
-}
-
 function extractDeadline(rawRequest, now = new Date()) {
   const match = rawRequest.match(
-    /(今天|今日|明天|明日|后天)?\s*(上午|中午|下午|晚上|凌晨)?\s*([零〇一二两三四五六七八九十\d]{1,3})\s*(?:点|时)(?:(半)|([零〇一二两三四五六七八九十\d]{1,3})分?)?\s*(?:前|之前)?/,
+    /(今天|今日|明天|明日|后天)?\s*(上午|中午|下午|晚上|今晚|凌晨)?\s*([零〇一二两三四五六七八九十\d]{1,3})(?:\s*[:：]\s*([零〇一二两三四五六七八九十\d]{1,3})|\s*(?:点|时)(?:(半)|([零〇一二两三四五六七八九十\d]{1,3})分?)?)\s*(?:前|之前)?/,
   )
 
   if (!match) return null
@@ -130,9 +137,11 @@ function extractDeadline(rawRequest, now = new Date()) {
   const dayText = match[1] || ''
   const period = match[2] || ''
   let hour = chineseNumberToInteger(match[3])
-  const minute = match[4] ? 30 : match[5] ? chineseNumberToInteger(match[5]) : 0
+  const minute = match[5] ? 30 : match[4] || match[6] ? chineseNumberToInteger(match[4] || match[6]) : 0
 
-  if ((period === '下午' || period === '晚上') && hour < 12) {
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null
+
+  if ((period === '下午' || period === '晚上' || period === '今晚') && hour < 12) {
     hour += 12
   }
 
@@ -140,10 +149,12 @@ function extractDeadline(rawRequest, now = new Date()) {
     hour += 12
   }
 
+  if (period === '凌晨' && hour === 12) hour = 0
+
   if (hour > 23 || minute > 59) return null
 
   const dayOffset = /明天|明日/.test(dayText) ? 1 : dayText === '后天' ? 2 : 0
-  const date = shanghaiDateWithOffset(now, dayOffset)
+  const date = getShanghaiDate(now, dayOffset)
   const hourText = String(hour).padStart(2, '0')
   const minuteText = String(minute).padStart(2, '0')
 
@@ -170,24 +181,57 @@ function extractItemCategory(rawRequest) {
 
 function extractSpecialRequirements(rawRequest) {
   return SPECIAL_REQUIREMENT_RULES
-    .filter((rule) => rawRequest.includes(rule.keyword))
+    .filter((rule) => {
+      const index = rawRequest.indexOf(rule.keyword)
+      if (index < 0) return false
+      return !/(?:不|无须|无需|不用|免)[^，。；]{0,3}$/.test(rawRequest.slice(Math.max(0, index - 6), index))
+    })
     .map((rule) => rule.value)
 }
 
-function parseTaskMock(rawRequest, now = new Date()) {
+function extractRoute(rawRequest, placeNames = []) {
+  const patterns = [
+    /从\s*([^，。；]+?)\s*(?:送到|送往|运到|配送到|送去|运往|到)\s*([^，。；]+?)(?=，|。|；|需要|要求|最晚|送\s*\d|$)/,
+    /(?:把|将)\s*[^，。；]+?\s*从\s*([^，。；]+?)\s*(?:送到|送往|运到|配送到|送去|运往)\s*([^，。；]+?)(?=，|。|；|需要|要求|最晚|送\s*\d|$)/,
+  ]
+  for (const pattern of patterns) {
+    const match = rawRequest.match(pattern)
+    if (match) return { origin: match[1].trim(), destination: match[2].trim() }
+  }
+
+  const originMatch = rawRequest.match(/从\s*([^，。；]+?)\s*(?=送|运|配送|转运|拿|取)/)
+  const destinationMatch = rawRequest.match(/(?:送到|送往|运到|配送到|送去|运往|到)\s*([^，。；]+?)(?=，|。|；|需要|要求|最晚|今天|明天|明日|后天|$)/)
+  if (originMatch && destinationMatch) {
+    return { origin: originMatch[1].trim(), destination: destinationMatch[1].trim() }
+  }
+
+  const mentioned = [...new Set(placeNames)]
+    .filter((name) => name && rawRequest.includes(name))
+    .map((name) => ({ name, index: rawRequest.indexOf(name) }))
+    .sort((left, right) => left.index - right.index || right.name.length - left.name.length)
+  if (mentioned.length >= 2) return { origin: mentioned[0].name, destination: mentioned[1].name }
+  return { origin: null, destination: null }
+}
+
+function extractWeightKg(rawRequest) {
+  const match = rawRequest.match(/(\d+(?:\.\d+)?)\s*(公斤|千克|kg|克|g|斤)/i)
+  if (!match) return null
+  const value = Number(match[1])
+  const unit = match[2].toLowerCase()
+  if (unit === '克' || unit === 'g') return value / 1000
+  if (unit === '斤') return value * 0.5
+  return value
+}
+
+function parseTaskMock(rawRequest, now = new Date(), options = {}) {
   if (typeof rawRequest !== 'string' || !rawRequest.trim()) {
     throw new Error('任务描述不能为空')
   }
 
   const text = rawRequest.trim()
 
-  const originMatch = text.match(/从\s*([^，。；]+?)\s*(?=送|运|配送|转运|拿|取)/)
-
-  const destinationMatch = text.match(/(?:送到|送往|运到|配送到|到)\s*([^，。；]+?)(?=，|。|需要|要求|最晚|今天|明天|后天|$)/)
-
-  const weightMatch = text.match(
-    /(\d+(?:\.\d+)?)\s*(?:公斤|千克|kg)/i,
-  )
+  const route = extractRoute(text, options.placeNames || [])
+  const weightKg = extractWeightKg(text)
 
   const preliminaryDescription = extractItemDescription(text, null)
   const itemRule = extractItemCategory(preliminaryDescription || text)
@@ -197,15 +241,11 @@ function parseTaskMock(rawRequest, now = new Date()) {
   const result = {
     raw_request: text,
 
-    origin_text: originMatch
-      ? originMatch[1].trim()
-      : null,
+    origin_text: route.origin,
 
     item_description: itemDescription,
 
-    destination_text: destinationMatch
-      ? destinationMatch[1].trim()
-      : null,
+    destination_text: route.destination,
 
     origin_node_id: null,
     destination_node_id: null,
@@ -214,9 +254,7 @@ function parseTaskMock(rawRequest, now = new Date()) {
       ? itemRule.category
       : 'other',
 
-    weight_kg: weightMatch
-      ? Number(weightMatch[1])
-      : null,
+    weight_kg: weightKg,
 
     deadline,
 
@@ -269,7 +307,7 @@ function parseTaskMock(rawRequest, now = new Date()) {
 }
 
 function parseNaturalLanguageTask(inputText, options = {}) {
-  const parsed = parseTaskMock(inputText, options.now instanceof Date ? options.now : new Date())
+  const parsed = parseTaskMock(inputText, options.now instanceof Date ? options.now : new Date(), options)
   const task = {
     input_text: parsed.raw_request,
     origin: parsed.origin_text || '',
