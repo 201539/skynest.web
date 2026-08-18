@@ -442,6 +442,7 @@ const wgs842cgcs = proj4('EPSG:4326', 'EPSG:4490')
 window.CESIUM_BASE_URL = '/'
 
 const API_BASE = '/api'
+const V3_API_BASE = '/api/v3'
 
 const activeRole = ref('')
 const currentUser = ref(null)
@@ -2647,7 +2648,7 @@ async function reloadGridsInView() {
         lod: 'auto',
         ...getGridScoreFilter(),
       })
-      result = await fetchJson(`${API_BASE}/grids/bbox?${params}`, { signal: controller.signal })
+      result = await fetchJson(`${V3_API_BASE}/grids/bbox?${params}`, { signal: controller.signal })
       gridDemoMode.value = false
     } else if (legacyToolsEnabled.value && appConfig.grid?.useDemoWhenOffline === true) {
       const demoLimit = Math.min(bboxLimit.value, 800)
@@ -2701,7 +2702,7 @@ async function checkDatabase(showToast = false) {
   const maxRetry = 3
   for (let i = 0; i < maxRetry; i++) {
     try {
-      const health = await fetchJson(`${API_BASE}/health`)
+      const health = await fetchJson(`${V3_API_BASE}/health`)
       dbServiceOnline.value = health.ok === true
       if (!dbServiceOnline.value) {
         dbConnected.value = false
@@ -2710,7 +2711,7 @@ async function checkDatabase(showToast = false) {
       }
 
       try {
-        const stats = await fetchJson(`${API_BASE}/stats`)
+        const stats = await fetchJson(`${V3_API_BASE}/grid-metadata`)
         dbConnected.value = true
         gridTotal.value = stats.total || 0
         gridBounds.value = stats.bounds || null
@@ -2724,7 +2725,7 @@ async function checkDatabase(showToast = false) {
         dbConnected.value = false
         gridTotal.value = 0
         if (showToast) {
-          showStatus('PostgreSQL 在线，但格网数据表损坏或未导入，请运行 import-data.ps1', 6000)
+          showStatus('V3 数据库在线，但 static.grid_3d 格网表不可用，请检查 V3 数据库配置', 6000)
         }
         if (layers.grid && viewer && gridDisplayMode.value !== 'route-dynamic') await reloadGridsInView()
         return false

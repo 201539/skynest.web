@@ -94,6 +94,69 @@ function createV3Router() {
     }
   })
 
+  // The static grid layer is read-only map data. Keep these two endpoints public
+  // so the campus map can render before a user chooses a role and signs in.
+  router.get('/grid-metadata', async (_req, res) => {
+    try {
+      res.json(await v3Database.getGridMetadata())
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
+  router.get('/grids/bbox', async (req, res) => {
+    try {
+      const startedAt = Date.now()
+      const metadata = await v3Database.getGridMetadata()
+      const xMin = parseQueryNumber(req.query.xMin, 'xMin')
+      const xMax = parseQueryNumber(req.query.xMax, 'xMax')
+      const yMin = parseQueryNumber(req.query.yMin, 'yMin')
+      const yMax = parseQueryNumber(req.query.yMax, 'yMax')
+      const zMin = parseQueryNumber(req.query.zMin, 'zMin')
+      const zMax = parseQueryNumber(req.query.zMax, 'zMax')
+      const effectiveLimit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 5000, 1), 20000)
+
+      let lod
+      if (req.query.lod == null || req.query.lod === '' || req.query.lod === 'auto') {
+        const cellSize = metadata.cellSize || {}
+        const countForSpan = (min, max, size) => {
+          if (![min, max, size].every(Number.isFinite) || size <= 0) return 1
+          return Math.max(1, Math.ceil(Math.max(0, max - min) / size))
+        }
+        const estimatedCells = countForSpan(xMin, xMax, cellSize.x)
+          * countForSpan(yMin, yMax, cellSize.y)
+          * countForSpan(zMin, zMax, cellSize.z)
+        lod = Math.min(64, Math.max(1, Math.ceil(Math.cbrt(estimatedCells / effectiveLimit))))
+      } else {
+        lod = Math.max(1, Math.floor(parseQueryNumber(req.query.lod, 'lod')))
+      }
+
+      const data = await v3Database.listGridCells({
+        xMin, xMax, yMin, yMax, zMin, zMax,
+        scoreMin: parseQueryNumber(req.query.scoreMin, 'scoreMin'),
+        scoreMax: parseQueryNumber(req.query.scoreMax, 'scoreMax'),
+        limit: effectiveLimit,
+        lod,
+        originX: metadata.bounds.xMin,
+        originY: metadata.bounds.yMin,
+        originZ: metadata.bounds.zMin,
+        cellSizeX: metadata.cellSize.x,
+        cellSizeY: metadata.cellSize.y,
+        cellSizeZ: metadata.cellSize.z,
+      })
+      res.json({
+        count: data.length,
+        total: metadata.total,
+        truncated: data.length === effectiveLimit,
+        lod,
+        queryMs: Date.now() - startedAt,
+        data,
+      })
+    } catch (error) {
+      sendQueryError(res, error)
+    }
+  })
+
   router.use(authService.authenticate)
 
   router.get('/auth/me', (req, res) => {
@@ -390,24 +453,6 @@ function createV3Router() {
         ...(req.body || {}),
         actor: req.auth.user.name,
       }))
-    } catch (error) {
-      sendQueryError(res, error)
-    }
-  })
-
-  router.get('/grids/bbox', authService.requireRoles(ROLES.SCHOOL), async (req, res) => {
-    try {
-      const data = await v3Database.listGridCells({
-        xMin: parseQueryNumber(req.query.xMin, 'xMin'),
-        xMax: parseQueryNumber(req.query.xMax, 'xMax'),
-        yMin: parseQueryNumber(req.query.yMin, 'yMin'),
-        yMax: parseQueryNumber(req.query.yMax, 'yMax'),
-        zMin: parseQueryNumber(req.query.zMin, 'zMin'),
-        zMax: parseQueryNumber(req.query.zMax, 'zMax'),
-        limit: req.query.limit,
-      })
-      const effectiveLimit = Math.min(Number.parseInt(req.query.limit, 10) || 5000, 20000)
-      res.json({ count: data.length, truncated: data.length === effectiveLimit, data })
     } catch (error) {
       sendQueryError(res, error)
     }
