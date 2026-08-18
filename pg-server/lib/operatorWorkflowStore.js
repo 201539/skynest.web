@@ -1,7 +1,11 @@
 const taskWorkflowStore = require('./taskWorkflowStore')
 const auditStore = require('./auditStore')
+const droneRecommendationService = require('./droneRecommendationService')
 
 const pool = taskWorkflowStore._pool
+// 展示临时开关：明日演示期间允许“接收并派发”覆盖资源占用状态。
+// TODO: 展示结束后设置 DEMO_FORCE_DISPATCH=false，恢复正式的无人机/节点互斥校验。
+const DEMO_FORCE_DISPATCH = process.env.DEMO_FORCE_DISPATCH !== 'false'
 const OPERATOR_DATABASE_STATUSES = [
   'approved', 'planned', 'replanned', 'dispatched', 'running',
   'arriving', 'completed', 'suspended',
@@ -122,6 +126,11 @@ async function listNodes(client) {
 async function getOperatorWorkspace(options = {}) {
   const client = options.client || pool
   const tasks = await taskWorkflowStore.listWorkspace({ client, statuses: OPERATOR_DATABASE_STATUSES })
+  for (const item of tasks) {
+    if (item.route && item.task.status === 'approved') {
+      item.drone_recommendation = await droneRecommendationService.evaluateTaskCandidates(client, item.task.id)
+    }
+  }
   const drones = await listDrones(client)
   const nodes = await listNodes(client)
   return {
@@ -176,14 +185,23 @@ async function dispatchTask(taskId, assignment = {}, options = {}) {
     )
     if (!droneResult.rowCount) throw conflict('所选无人机不存在', 'DRONE_NOT_FOUND')
     const drone = droneResult.rows[0]
-    if (drone.status !== 'idle' || drone.task_id != null) {
+    if (!DEMO_FORCE_DISPATCH && (drone.status !== 'idle' || drone.task_id != null)) {
       throw conflict('所选无人机已被其他任务占用', 'DRONE_UNAVAILABLE')
     }
-    if (drone.battery_level != null && Number(drone.battery_level) < 20) {
+    if (!DEMO_FORCE_DISPATCH && drone.battery_level != null && Number(drone.battery_level) < 20) {
       throw conflict('所选无人机电量低于20%，不能执行任务', 'DRONE_BATTERY_LOW')
     }
-    if (drone.payload_kg != null && task.weight_kg != null && Number(drone.payload_kg) < Number(task.weight_kg)) {
+    if (!DEMO_FORCE_DISPATCH && drone.payload_kg != null && task.weight_kg != null && Number(drone.payload_kg) < Number(task.weight_kg)) {
       throw conflict('所选无人机载重不足', 'DRONE_PAYLOAD_EXCEEDED')
+    }
+    const candidateResult = await client.query(
+      `SELECT is_eligible, recommendation_reason FROM runtime.task_drone_candidates
+       WHERE task_id=$1 AND route_id=$2 AND drone_id=$3
+       ORDER BY evaluated_at DESC LIMIT 1`,
+      [id, routeResult.rows[0].route_id, droneId]
+    )
+    if (!DEMO_FORCE_DISPATCH && candidateResult.rowCount && !candidateResult.rows[0].is_eligible) {
+      throw conflict(`所选无人机不满足当前任务：${candidateResult.rows[0].recommendation_reason}`, 'DRONE_REQUIREMENTS_MISMATCH')
     }
 
     await client.query(
@@ -201,19 +219,48 @@ async function dispatchTask(taskId, assignment = {}, options = {}) {
     )
     if (!nodeResult.rowCount) throw conflict('所选接驳节点不存在', 'NODE_NOT_FOUND')
     const node = nodeResult.rows[0]
-    if (node.status !== 'active' || node.availability !== 'available' || node.node_task_id != null) {
+    if (!DEMO_FORCE_DISPATCH && (node.status !== 'active' || node.availability !== 'available' || node.node_task_id != null)) {
       throw conflict('所选接驳节点当前不可用', 'NODE_UNAVAILABLE')
     }
     if (!['landing', 'transfer', 'relay'].includes(node.node_type)) {
       throw conflict('所选节点不是接驳节点', 'NODE_TYPE_INVALID')
     }
 
+    if (DEMO_FORCE_DISPATCH) {
+      // 展示专用：避免唯一资源残留在旧任务上导致演示流程中断。
+      // TODO: 正式环境删除此覆盖逻辑，只允许资源释放后再派发。
+      await client.query(
+        `UPDATE runtime.drones
+         SET status = 'idle', task_id = NULL, updated_at = now()
+         WHERE task_id = $1 AND drone_id <> $2`,
+        [id, droneId]
+      )
+      await client.query(
+        `UPDATE runtime.node_states
+         SET availability = 'available', door_state = 'closed', delivery_state = 'idle',
+             task_id = NULL, updated_at = now()
+         WHERE task_id = $1 AND node_id <> $2`,
+        [id, nodeId]
+      )
+      await client.query(
+        'UPDATE runtime.tasks SET assigned_drone_id = NULL, updated_at = now() WHERE assigned_drone_id = $1 AND task_id <> $2',
+        [droneId, id]
+      )
+      await client.query(
+        'UPDATE runtime.tasks SET assigned_node_id = NULL, updated_at = now() WHERE assigned_node_id = $1 AND task_id <> $2',
+        [nodeId, id]
+      )
+    }
+
     await client.query(
       `UPDATE runtime.tasks
        SET assigned_drone_id = $2, assigned_node_id = $3,
+           resource_confirmed_at = CASE WHEN $4::boolean THEN now() ELSE resource_confirmed_at END,
+           resource_confirmed_by = CASE WHEN $4::boolean THEN $5 ELSE resource_confirmed_by END,
+           selection_reason = $6,
            status = 'dispatched', updated_at = now()
        WHERE task_id = $1`,
-      [id, droneId, nodeId]
+      [id, droneId, nodeId, assignment.confirmed === true, assignment.actor || '运营调度员', assignment.selection_reason || null]
     )
     await client.query(
       `UPDATE runtime.drones
@@ -234,6 +281,7 @@ async function dispatchTask(taskId, assignment = {}, options = {}) {
       node_id: nodeId,
       node_name: node.node_name,
       route_id: Number(routeResult.rows[0].route_id),
+      demo_force_dispatch: DEMO_FORCE_DISPATCH,
     })
     await auditStore.appendEvent({
       event_type: 'task_dispatched',

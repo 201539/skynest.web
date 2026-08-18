@@ -116,12 +116,16 @@ function recommendV3Vehicle(task, context = {}) {
   const riskRule = (context.highRiskCategories || []).find((item) => item.category_name === mapped.risk)
   const highRisk = riskRule ? Boolean(riskRule.requires_manual) : FALLBACK_HIGH_RISK.has(task.item_category)
   const databaseRule = findV3Rule(task, context.vehicleRules || [], mapped.rule)
+  const modelCandidates = databaseRule?.remarks
+    ? String(databaseRule.remarks).replace(/^[^:：]+[:：]\s*/, '').split(/\s*[/、]\s*/).filter(Boolean)
+    : []
   const vehicle = databaseRule ? {
     code: databaseRule.vehicle_class,
     label: V3_VEHICLE_CLASSES[databaseRule.vehicle_class]?.label || databaseRule.vehicle_class,
     max_weight_kg: Number(databaseRule.max_weight_kg),
     database_category: mapped.rule,
     rule_source: 'static.vehicle_rules',
+    model_candidates: modelCandidates,
   } : null
   const requiredHandling = normalizeRequirements(task.special_requirements, databaseRule, riskRule)
   if (!vehicle) {
@@ -137,8 +141,8 @@ function recommendV3Vehicle(task, context = {}) {
     needs_manual_review: highRisk,
     required_handling: requiredHandling,
     reason: highRisk
-      ? `V3规则建议${vehicle.label}，但“${task.item_category}”触发专项人工复核。`
-      : `V3规则按“${mapped.rule}”和${task.weight_kg}公斤载重推荐${vehicle.label}。`,
+      ? `V3规则按“${mapped.rule}”和${task.weight_kg}公斤载重建议${modelCandidates.length ? modelCandidates.join('或') : vehicle.label}，但“${task.item_category}”触发专项人工复核。`
+      : `V3规则按“${mapped.rule}”和${task.weight_kg}公斤载重建议${modelCandidates.length ? modelCandidates.join('或') : vehicle.label}；具体执行单机还需结合航程、电量、状态和功能配置筛选。`,
   }
 }
 

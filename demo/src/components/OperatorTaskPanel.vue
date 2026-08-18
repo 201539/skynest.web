@@ -80,6 +80,7 @@
           :route="selectedItem.route"
           audience="operator"
           :task-status="selectedItem.task.status"
+          :drone-recommendation="selectedItem.drone_recommendation"
         />
 
         <div class="route-card">
@@ -114,7 +115,7 @@
               <select v-model="selectedDroneId">
                 <option disabled value="">请选择空闲无人机</option>
                 <option v-for="drone in availableDrones" :key="drone.id" :value="drone.id">
-                  {{ drone.name }} · 电量{{ drone.battery_percent }}%
+                  {{ Number(drone.id) === Number(selectedItem.drone_recommendation?.drone_id) ? '✨ AI推荐 · ' : '' }}{{ drone.name }} · 电量{{ drone.battery_percent }}%
                 </option>
               </select>
             </label>
@@ -127,6 +128,11 @@
                 </option>
               </select>
             </label>
+          </div>
+          <p v-if="resourceBlockReason && !DEMO_FORCE_DISPATCH" class="resource-block-reason" role="status">{{ resourceBlockReason }}</p>
+          <div v-if="selectedItem.drone_recommendation" class="ai-recommendation-note">
+            <strong>✨ Agent 型号推荐解释</strong>
+            <p>推荐 {{ selectedItem.drone_recommendation.model_name }}：{{ selectedItem.drone_recommendation.reason }}。该结果由任务重量、航线里程、当前电量、可用状态及功能要求共同筛选得出，最终仍由运营人员确认。</p>
           </div>
         </div>
 
@@ -145,8 +151,12 @@
 
         <div v-if="operationError" class="operation-error" role="alert">{{ operationError }}</div>
 
-        <div v-if="nextAction" class="task-action">
-          <span>{{ nextAction.hint }}</span>
+        <div v-if="nextAction" :class="['task-action', { 'demo-dispatch': DEMO_FORCE_DISPATCH && selectedItem.task.status === TASK_STATUS.APPROVED }]">
+          <span v-if="!(DEMO_FORCE_DISPATCH && selectedItem.task.status === TASK_STATUS.APPROVED)">{{ actionHint }}</span>
+          <label v-if="selectedItem.task.status === TASK_STATUS.APPROVED" class="resource-confirmation">
+            <input v-model="resourceConfirmed" type="checkbox" :disabled="!resourcesSelectable" />
+            <b>{{ resourceConfirmed ? '已确认无人机和接驳节点' : '确认无人机和接驳节点' }}</b>
+          </label>
           <button type="button" :disabled="operating || !canRunNextAction" @click="runNextAction">
             {{ operating ? '处理中…' : nextAction.label }}
           </button>
@@ -176,6 +186,10 @@ import { useTaskAutoRefresh } from '../composables/useTaskAutoRefresh'
 
 const emit = defineEmits(['updated', 'notify', 'view-route'])
 
+// 展示临时开关：明日演示期间允许“接收并派发”忽略资源占用条件。
+// TODO: 展示结束后改为 false，恢复无人机与接驳节点的正式校验流程。
+const DEMO_FORCE_DISPATCH = true
+
 const ACTIVE_STATUSES = new Set([
   TASK_STATUS.APPROVED,
   TASK_STATUS.DISPATCHED,
@@ -200,15 +214,18 @@ const filter = ref('active')
 const selectedTaskId = ref('')
 const selectedDroneId = ref('')
 const selectedNodeId = ref('')
+const resourceConfirmed = ref(false)
 
 const activeTaskCount = computed(() => workspace.value.tasks.filter((item) => ACTIVE_STATUSES.has(item.task.status)).length)
 const availableDrones = computed(() => workspace.value.drones.filter((drone) => drone.status === DRONE_STATUS.IDLE))
 const availableNodes = computed(() => workspace.value.nodes.filter((node) => node.availability === NODE_AVAILABILITY.AVAILABLE))
 const plannedReceivingNodeId = computed(() => getPlannedReceivingNodeId(selectedItem.value))
+const plannedReceivingNode = computed(() => workspace.value.nodes.find((node) => Number(node.id) === plannedReceivingNodeId.value) || null)
 const assignableNodes = computed(() => {
   const plannedNodeId = plannedReceivingNodeId.value
   if (plannedNodeId != null) {
-    return availableNodes.value.filter((node) => Number(node.id) === plannedNodeId)
+    const source = DEMO_FORCE_DISPATCH ? workspace.value.nodes : availableNodes.value
+    return source.filter((node) => Number(node.id) === plannedNodeId)
   }
 
   const candidates = orderedAvailableCandidates(selectedItem.value)
@@ -233,19 +250,41 @@ const nextAction = computed(() => ({
   [TASK_STATUS.IN_TRANSIT]: { label: '标记到达节点', hint: '无人机抵达接驳节点后更新状态。' },
   [TASK_STATUS.ARRIVING]: { label: '确认完成交付', hint: '确认收件完成并释放无人机和节点。' },
 }[selectedItem.value?.task.status] || null))
+const resourcesSelectable = computed(() => DEMO_FORCE_DISPATCH || Boolean(selectedDroneId.value && selectedNodeId.value))
+const resourceBlockReason = computed(() => {
+  if (selectedItem.value?.task.status !== TASK_STATUS.APPROVED) return ''
+  if (DEMO_FORCE_DISPATCH) return '展示模式：本次“接收并派发”暂时忽略资源占用条件，正式使用前必须恢复校验。'
+  if (!selectedDroneId.value) return '当前没有满足任务要求的空闲无人机，请等待资源释放或由运营人员处理。'
+  if (plannedReceivingNodeId.value != null && !assignableNodes.value.length) {
+    const node = plannedReceivingNode.value
+    const nodeName = node?.name || `L3节点 ${plannedReceivingNodeId.value}`
+    const occupiedBy = node?.task_id ? `，正被任务 ${node.task_id} 占用` : ''
+    return `航线指定的接驳节点“${nodeName}”当前不可用${occupiedBy}，资源释放前不能派发。`
+  }
+  if (!selectedNodeId.value) return '请选择航线指定的可用接驳节点。'
+  return ''
+})
+const actionHint = computed(() => resourceBlockReason.value || nextAction.value?.hint || '')
 const canRunNextAction = computed(() => {
   if (selectedItem.value?.task.status !== TASK_STATUS.APPROVED) return true
-  return Boolean(selectedDroneId.value && selectedNodeId.value)
+  if (DEMO_FORCE_DISPATCH) return true
+  return Boolean(selectedDroneId.value && selectedNodeId.value && resourceConfirmed.value)
 })
 
 watch(filteredTasks, (items) => {
   if (!items.some((item) => item.task.id === selectedTaskId.value)) selectedTaskId.value = items[0]?.task.id || ''
 })
 
-watch(selectedItem, (item) => {
+watch(() => selectedItem.value?.task.id, () => {
+  const item = selectedItem.value
   operationError.value = ''
+  resourceConfirmed.value = false
   if (item?.task.status === TASK_STATUS.APPROVED) setDefaultResources(item)
 }, { immediate: true })
+
+watch([selectedDroneId, selectedNodeId], () => {
+  resourceConfirmed.value = false
+})
 
 function getPlannedReceivingNodeId(item) {
   const accessPoint = item?.route?.planning_context?.access_points?.receiving
@@ -264,9 +303,10 @@ function setDefaultResources(item) {
   const plannedNodeId = getPlannedReceivingNodeId(item)
   const plannedNode = plannedNodeId == null
     ? null
-    : availableNodes.value.find((node) => Number(node.id) === plannedNodeId)
+    : (DEMO_FORCE_DISPATCH ? workspace.value.nodes : availableNodes.value).find((node) => Number(node.id) === plannedNodeId)
   const candidateNode = plannedNodeId == null ? orderedAvailableCandidates(item)[0] : null
-  selectedDroneId.value = availableDrones.value[0]?.id || ''
+  const recommendedId = item?.drone_recommendation?.drone_id
+  selectedDroneId.value = availableDrones.value.find((drone) => Number(drone.id) === Number(recommendedId))?.id || availableDrones.value[0]?.id || ''
   selectedNodeId.value = plannedNode?.id || candidateNode?.id || (plannedNodeId == null ? availableNodes.value[0]?.id : '') || ''
 }
 
@@ -344,7 +384,14 @@ async function runNextAction() {
   try {
     const previousStatus = item.task.status
     workspace.value = previousStatus === TASK_STATUS.APPROVED
-      ? await demoApi.dispatchTask(item.task.id, { drone_id: selectedDroneId.value, node_id: selectedNodeId.value })
+      ? await demoApi.dispatchTask(item.task.id, {
+          drone_id: selectedDroneId.value || item.drone_recommendation?.drone_id || workspace.value.drones[0]?.id,
+          node_id: selectedNodeId.value || plannedReceivingNodeId.value || workspace.value.nodes[0]?.id,
+          confirmed: DEMO_FORCE_DISPATCH || resourceConfirmed.value,
+          selection_reason: Number(selectedDroneId.value) === Number(item.drone_recommendation?.drone_id)
+            ? `${DEMO_FORCE_DISPATCH ? '展示模式；' : ''}采用系统推荐无人机`
+            : '运营人员人工改选',
+        })
       : await demoApi.advanceOperatorTask(item.task.id)
     emit('updated', workspace.value)
     emit('notify', {
@@ -441,6 +488,9 @@ onMounted(loadWorkspace)
 .detail-grid strong { color: #d7e4f1; font-size: 10px; }
 
 .route-card, .assignment-card { margin-top: 9px; padding: 9px; background: rgba(4, 13, 27, 0.48); border: 1px solid rgba(144, 202, 249, 0.12); border-radius: 8px; }
+.ai-recommendation-note { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; padding: 10px 11px; color: #d9fbe4; background: rgba(105,240,174,.08); border: 1px solid rgba(105,240,174,.24); border-radius: 7px; font-size: 11px; line-height: 1.65; }
+.ai-recommendation-note strong { display: block; margin-bottom: 4px; color: #69f0ae; font-size: 12px; }
+.ai-recommendation-note p { margin: 0; color: #d9fbe4; font-size: 11px; line-height: 1.65; }
 .section-title { color: #dbe9f7; font-size: 11px; font-weight: 700; }
 .route-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .route-title-row button { padding: 4px 7px; color: #b3e5fc; background: rgba(3, 169, 244, 0.1); border: 1px solid rgba(79, 195, 247, 0.24); border-radius: 5px; font-size: 9px; cursor: pointer; }
@@ -458,9 +508,13 @@ onMounted(loadWorkspace)
 .resource-card strong { color: #d7e4f1; font-size: 10px; }
 .resource-card small { color: #90a4ae; font-size: 9px; }
 
+.resource-block-reason { margin: 8px 0 0; padding: 8px 9px; color: #ffccbc; background: rgba(255,112,67,.08); border: 1px solid rgba(255,138,101,.22); border-radius: 6px; font-size: 10px; line-height: 1.5; }
 .operation-error { margin-top: 8px; color: #ffab91; font-size: 10px; }
-.task-action { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
-.task-action > span { max-width: 55%; color: #90a4ae; font-size: 9px; line-height: 1.4; }
+.task-action { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.task-action.demo-dispatch { grid-template-columns: 1fr auto; }
+.task-action > span { min-width: 0; color: #90a4ae; font-size: 9px; line-height: 1.4; }
+.resource-confirmation { display:flex; align-items:center; gap:4px; color:#b3e5fc; font-size:9px; white-space:nowrap; cursor:pointer; }
+.resource-confirmation:has(input:disabled) { opacity:.55; cursor:not-allowed; }
 .task-action button { padding: 8px 11px; color: #061426; font-weight: 700; background: linear-gradient(135deg, #90caf9, #4fc3f7); border: 1px solid rgba(255, 255, 255, 0.4); border-radius: 7px; font-size: 10px; cursor: pointer; }
 .task-action button:disabled, .refresh-btn:disabled { opacity: 0.5; cursor: wait; }
 .complete-card { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding: 9px; color: #c8e6c9; background: rgba(102, 187, 106, 0.09); border: 1px solid rgba(102, 187, 106, 0.22); border-radius: 7px; font-size: 10px; }
