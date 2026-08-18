@@ -2662,6 +2662,8 @@ async function reloadGridsInView() {
         ...bbox,
         zMin: String(zRange.zMin),
         zMax: String(zRange.zMax),
+        zTarget: String((zRange.zMin + zRange.zMax) / 2),
+        surface: appConfig.grid?.flightLayerOnly !== false ? '1' : '0',
         limit: String(bboxLimit.value),
         lod: 'auto',
         ...getGridScoreFilter(),
