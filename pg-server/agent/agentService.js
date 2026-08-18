@@ -2,6 +2,7 @@ const { loadAgentContext } = require('./staticRepository')
 const { processNaturalLanguage, processStructuredTask } = require('./taskOrchestrator')
 const { explainTask, getAgentModelStatus } = require('../llm/agentExplanationService')
 const { updateRuntimeLlmConfig } = require('../llm/runtimeConfig')
+const { extractTask, getTaskExtractionStatus } = require('./taskExtractionService')
 
 async function withExplanation(task) {
   const ai = await explainTask(task)
@@ -30,7 +31,11 @@ async function contextFor(pool) {
 
 async function parseInput(inputText, options = {}) {
   const context = await contextFor(options.pool)
-  return withExplanation(processNaturalLanguage(inputText, context, options.now || new Date()))
+  const now = options.now || new Date()
+  const extracted = await extractTask(inputText, context, now)
+  const result = processStructuredTask(extracted.task, context)
+  result.agent_analysis.extraction = extracted.extraction
+  return withExplanation(result)
 }
 
 async function verifyStructuredTask(input, options = {}) {
@@ -65,4 +70,8 @@ async function updateModelConfig(values = {}) {
   return getAgentModelStatus()
 }
 
-module.exports = { parseInput, verifyStructuredTask, assertLocationsMatched, getAgentModelStatus, updateModelConfig }
+async function getCombinedAgentStatus() {
+  return { ...(await getAgentModelStatus()), task_extraction: getTaskExtractionStatus() }
+}
+
+module.exports = { parseInput, verifyStructuredTask, assertLocationsMatched, getAgentModelStatus: getCombinedAgentStatus, updateModelConfig }

@@ -12,6 +12,7 @@ function buildAgentContext(task) {
       origin: task.origin || null,
       destination: task.destination || null,
       item_category: task.item_category || null,
+      item_description: task.item_description || null,
       weight_kg: task.weight_kg ?? null,
       deadline: task.deadline || null,
       priority: task.priority || 'normal',

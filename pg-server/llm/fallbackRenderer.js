@@ -3,7 +3,7 @@ function buildFallbackAnalysis(context) {
   const needsReview = context.policy.needs_manual_review
   const vehicle = context.vehicle_rule.label || context.vehicle_rule.class || '待校方确定机型'
   return {
-    summary: `${task.weight_kg ?? '未知重量'}公斤${task.item_category || '待确认物品'}从${task.origin || '待确认起点'}运往${task.destination || '待确认终点'}。`,
+    summary: `${task.weight_kg ?? '未知重量'}公斤${task.item_description || task.item_category || '待确认物品'}从${task.origin || '待确认起点'}运往${task.destination || '待确认终点'}。`,
     risk_level: context.policy.risk_level,
     risk_reasons: needsReview
       ? ['任务触发V3高风险或信息核对规则']

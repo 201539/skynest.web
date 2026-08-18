@@ -88,7 +88,7 @@
 
         <div class="detail-grid">
           <div><span>申请人</span><strong>{{ requesterLabel }}</strong></div>
-          <div><span>物品</span><strong>{{ selectedItem.task.item_category }}</strong></div>
+          <div><span>物品</span><strong>{{ selectedItem.task.item_description || selectedItem.task.item_category }} · {{ selectedItem.task.item_category }}</strong></div>
           <div><span>重量</span><strong>{{ selectedItem.task.weight_kg }} kg</strong></div>
           <div><span>送达时限</span><strong>{{ formatDateTime(selectedItem.task.deadline) }}</strong></div>
           <div><span>优先级</span><strong>{{ priorityLabel(selectedItem.task.priority) }}</strong></div>

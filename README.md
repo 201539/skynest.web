@@ -283,6 +283,17 @@ OLLAMA_MODEL=qwen3.5:4b
 LLM_FALLBACK_ENABLED=true
 ```
 
+师生端的自然语言字段提取和正式建筑名语义匹配可单独接入 DeepSeek；密钥只能填写在后端 `pg-server/.env`：
+
+```env
+DEEPSEEK_API_KEY=仅在服务端填写
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_TIMEOUT_MS=30000
+```
+
+未配置或调用失败时，系统自动回退到本地解析规则；模型返回的建筑名仍会经过83栋正式建筑库校验。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/health` | 数据库连接状态 |

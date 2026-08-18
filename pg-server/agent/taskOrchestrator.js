@@ -6,6 +6,7 @@ const FIELD_LABELS = Object.freeze({
   origin: '起点',
   destination: '终点',
   item_category: '物品类型',
+  item_description: '具体物品',
   weight_kg: '重量',
   deadline: '送达时限',
 })
@@ -14,6 +15,7 @@ const FIELD_QUESTIONS = Object.freeze({
   origin: '请补充任务起点，例如“从图书馆出发”。',
   destination: '请补充任务终点，例如“送到实验中心”。',
   item_category: '请说明运输物品类型，例如文件、餐食或实验材料。',
+  item_description: '请说明具体运输物品及数量，例如“两箱玻璃瓶”。',
   weight_kg: '请补充物品重量，单位为公斤。',
   deadline: '请补充期望送达时间。',
 })
@@ -27,6 +29,7 @@ function normalizeStructuredTask(input = {}) {
     origin: String(input.origin || '').trim(),
     destination: String(input.destination || '').trim(),
     item_category: category,
+    item_description: String(input.item_description || '').trim() || null,
     weight_kg: Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : null,
     deadline,
     priority: ['emergency', 'urgent', 'high', 'normal', 'low'].includes(input.priority) ? input.priority : 'normal',
@@ -71,7 +74,7 @@ function formatDeadline(value) {
 function buildExplanation(task, vehicleResult, status) {
   if (status === 'needs_clarification') return `已识别配送需求，但还缺少${task.missing_fields.length}项必要信息。`
   if (status === 'needs_location_confirmation') return '任务字段已基本完整，但起点或终点尚未与校园地点可靠对应。'
-  return `我理解这是一项从${task.origin}运送至${task.destination}的${task.item_category}任务，重量约${task.weight_kg}公斤，需在${formatDeadline(task.deadline)}前送达。${vehicleResult.reason}`
+  return `我理解这是一项从${task.origin}运送至${task.destination}的${task.item_description || task.item_category}任务，重量约${task.weight_kg}公斤，需在${formatDeadline(task.deadline)}前送达。${vehicleResult.reason}`
 }
 
 function buildAnalysis(task, originMatch, destinationMatch, vehicleResult, status, contextSource) {
@@ -87,6 +90,7 @@ function buildAnalysis(task, originMatch, destinationMatch, vehicleResult, statu
   const reasoning = []
   if (task.origin && task.destination) reasoning.push(`识别运输路径：${task.origin} → ${task.destination}`)
   if (task.item_category) reasoning.push(`物品归类为“${task.item_category}”`)
+  if (task.item_description) reasoning.push(`具体物品：${task.item_description}`)
   if (task.weight_kg != null) reasoning.push(`识别载重：${task.weight_kg} kg`)
   if (task.deadline) reasoning.push(`识别送达时限：${formatDeadline(task.deadline)}`)
   if (vehicleResult.vehicle) reasoning.push(vehicleResult.reason)
