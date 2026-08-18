@@ -3082,6 +3082,10 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
   const droneCfg = appConfig.droneModel || {}
   const droneUrl = droneCfg.url || './Models/parrot_camo_drone.glb'
   const headingOffset = Cesium.Math.toRadians(droneCfg.headingOffset || 0)
+  const dronePathData = {
+    ...pathData,
+    positions: pathData.positions.map((position) => placeCartesianAboveGrid(position)),
+  }
   const hasDroneModel = await assetExists(droneUrl)
 
   if (hasDroneModel) {
@@ -3090,7 +3094,7 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
       show: layers.drone,
       model: {
         uri: droneUrl,
-        minimumPixelSize: droneCfg.minimumPixelSize ?? 32,
+        minimumPixelSize: Math.max(Number(droneCfg.minimumPixelSize || 0), 40),
         scale: droneCfg.scale ?? 2,
         maximumScale: droneCfg.maximumScale ?? 120,
       },
@@ -3117,7 +3121,7 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
 
   const animationMode = options.animationMode || 'play'
   if (animationMode === 'play') {
-    startFlightAnimation(route, pathData, headingOffset)
+    startFlightAnimation(route, dronePathData, headingOffset)
   } else {
     setDroneStaticPosition(route, headingOffset, animationMode === 'arrived')
   }
@@ -3151,10 +3155,23 @@ async function loadSelectedRoute(routeOverride = null, options = {}) {
   }
 }
 
+function droneDisplayHeight(routeHeight = 0) {
+  return Number(routeHeight || 0)
+}
+
+function placeCartesianAboveGrid(position) {
+  const cartographic = Cesium.Cartographic.fromCartesian(position)
+  return Cesium.Cartesian3.fromRadians(
+    cartographic.longitude,
+    cartographic.latitude,
+    droneDisplayHeight(cartographic.height),
+  )
+}
+
 function setDroneStaticPosition(route, headingOffset = 0, atEnd = false) {
   if (!droneEntity || !route?.points?.length || !viewer) return
   const point = atEnd ? route.points[route.points.length - 1] : route.points[0]
-  const position = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, point.height)
+  const position = Cesium.Cartesian3.fromDegrees(point.lng, point.lat, droneDisplayHeight(point.height))
   droneEntity.position = position
   droneEntity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
     position,

@@ -25,6 +25,8 @@ nanjing_uni_3d_grid_new.sql
 *.dump
 *.tar
 *.backup
+deliverables/*.zip
+deliverables/SHA256.txt
 
 # 编辑器 / 系统
 .vscode/*

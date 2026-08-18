@@ -23,6 +23,7 @@ const props = defineProps({
   route: { type: Object, default: null },
   audience: { type: String, default: 'school' },
   taskStatus: { type: String, default: '' },
+  droneRecommendation: { type: Object, default: null },
 })
 
 const riskLabels = Object.freeze({
@@ -46,12 +47,16 @@ const generationTone = computed(() => ['fallback', 'pending'].includes(props.rou
 const accessPlan = computed(() => props.analysis?.access_point_plan || props.route?.planning_context?.access_points || {})
 const departure = computed(() => accessPlan.value.departure || null)
 const receiving = computed(() => accessPlan.value.receiving || null)
-const vehicleLabel = computed(() => props.analysis?.vehicle_recommendation?.vehicle?.label || props.task?.recommended_vehicle_class || '待规则确定的机型')
+const vehicleLabel = computed(() => {
+  const vehicle = props.analysis?.vehicle_recommendation?.vehicle
+  return vehicle?.model_candidates?.length ? vehicle.model_candidates.join('或') : vehicle?.label || props.task?.recommended_vehicle_class || '待规则确定的机型'
+})
+const vehicleReason = computed(() => props.analysis?.vehicle_recommendation?.reason || '')
 const requirements = computed(() => props.task?.special_requirements?.length ? props.task.special_requirements.join('、') : '')
 
 const decisionSummary = computed(() => {
   if (props.audience === 'operator') return operatorSummary()
-  if (props.route?.agent_explanation?.summary) return props.route.agent_explanation.summary
+  if (props.route?.agent_explanation?.summary) return `${props.route.agent_explanation.summary} 型号推荐理由：${vehicleReason.value || `V3规则建议${vehicleLabel.value}`}；具体执行单机由运营端结合实际航程、电量、状态和功能配置确认。`
   if (props.route?.route_type === 'replan') return replanSummary()
   if (props.route) return plannedSchoolSummary()
   return pendingSchoolSummary()
@@ -67,7 +72,8 @@ function pendingSchoolSummary() {
     : '需求信息完整，未触发高风险专项复核，但仍须校方常规审批'
   const handling = requirements.value ? `，并核验${requirements.value}措施` : ''
   const categoryCheck = task.item_category === '危险化学品' ? '，校方还须核验危化品运输资质、密封包装、接收人员和泄漏应急预案' : task.item_category === '高价值设备' ? '，校方还须核验防震包装、交接责任、接收人身份和设备保全措施' : ['医疗样本','生物材料'].includes(task.item_category) ? '，校方还须核验运输资质、冷链连续性、包装和接收条件' : ''
-  return `${task.item_category || '该物品'}重${task.weight_kg ?? '未知'}kg，由${task.origin || '未确认起点'}送往${task.destination || '未确认终点'}；${nodeText}。V3规则匹配${vehicleLabel.value}；${review}${handling}${categoryCheck}。批准后才由动态格网算法生成航线，Agent不参与节点、机型或审批决策。`
+  const recommendation = vehicleReason.value || `V3规则匹配${vehicleLabel.value}`
+  return `${task.item_category || '该物品'}重${task.weight_kg ?? '未知'}kg，由${task.origin || '未确认起点'}送往${task.destination || '未确认终点'}；${nodeText}。型号推荐理由：${recommendation}；${review}${handling}${categoryCheck}。批准后由动态格网算法生成航线，运营端再结合实际航程、电量、状态和功能配置确认具体单机，Agent不参与节点、机型或审批决策。`
 }
 
 function plannedSchoolSummary() {
@@ -84,7 +90,7 @@ function plannedSchoolSummary() {
     route.avoided_zones?.length ? `已绕开${route.avoided_zones.join('、')}` : '未遇到已记录的生效限制区',
   ].filter(Boolean).join('，')
   const handling = requirements.value ? `；执行前应确认${requirements.value}措施` : ''
-  return `校方批准后，${route.algorithm || 'A*'}算法生成${nodeText}的${route.waypoints?.length || 0}个航点航线，全长${distanceLabel(route.total_length_meters)}，主要成本来自${risks}；${evidence}${handling}。若天气使用默认值，应在执行前核验实际天气；航线、节点和机型均由规则算法确定，Agent仅解释结果。`
+  return `校方批准后，${route.algorithm || 'A*'}算法生成${nodeText}的${route.waypoints?.length || 0}个航点航线，全长${distanceLabel(route.total_length_meters)}，主要成本来自${risks}；${evidence}${handling}。型号推荐理由：${vehicleReason.value || `V3规则建议${vehicleLabel.value}`}；具体执行单机由运营端结合实际航程、电量、状态和功能配置确认。若天气使用默认值，应在执行前核验实际天气；Agent仅解释结果。`
 }
 
 function replanSummary() {
@@ -105,7 +111,11 @@ function operatorSummary() {
   const weatherDefault = route.cost_breakdown?.surface_summary?.weather_data?.configured_default
   const weather = weatherDefault ? '，并在起飞前核验实际天气' : ''
   const version = route.route_type === 'replan' ? '当前重新规划版本' : '校方批准的当前版本'
-  return `任务使用${vehicleLabel.value}，${nodes}；${version}含${route.waypoints?.length || 0}个航点、全长${distanceLabel(route.total_length_meters)}。执行前确认无人机电量、节点状态和货物交接条件${handling}${weather}；必须使用当前批准航点链，不得自行更换节点或航线，Agent仅解释执行依据。`
+  const recommendation = props.droneRecommendation
+  const modelExplanation = recommendation
+    ? `系统推荐${recommendation.model_name}，理由是${recommendation.reason}`
+    : `当前尚无满足实时状态的具体单机推荐，先按${vehicleLabel.value}能力等级准备`
+  return `${modelExplanation}；${nodes}。${version}含${route.waypoints?.length || 0}个航点、全长${distanceLabel(route.total_length_meters)}。执行前确认节点状态和货物交接条件${handling}${weather}；最终选机由运营人员确认，Agent只解释筛选依据，不修改航线或派发结果。`
 }
 
 function distanceLabel(value) {
@@ -120,5 +130,5 @@ function changeLabel(value) {
 </script>
 
 <style scoped>
-.agent-summary{margin-top:10px;padding:11px;background:rgba(18,54,78,.2);border:1px solid rgba(79,195,247,.24);border-radius:9px}.agent-summary header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.agent-summary header>div:first-child{display:flex;flex-direction:column;gap:2px}.agent-summary header span{color:#4fc3f7;font-size:8px;letter-spacing:.08em}.agent-summary header strong{color:#e7f2fb;font-size:11px}.status-badges{display:flex;align-items:flex-end;flex-direction:column;gap:3px}.status-badges b{padding:3px 6px;color:#b3e5fc;background:rgba(3,169,244,.12);border-radius:999px;font-size:8px}.status-badges i{font-size:8px;font-style:normal}.status-badges .complete{color:#69f0ae}.status-badges .fallback{color:#ffd180}.agent-summary p{margin:9px 0 0;padding:9px;color:#d7e8f5;background:rgba(3,169,244,.06);border-radius:6px;font-size:10px;line-height:1.65}
+.agent-summary{margin-top:10px;padding:11px;background:rgba(18,54,78,.2);border:1px solid rgba(79,195,247,.24);border-radius:9px}.agent-summary header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.agent-summary header>div:first-child{display:flex;flex-direction:column;gap:2px}.agent-summary header span{color:#4fc3f7;font-size:8px;letter-spacing:.08em}.agent-summary header strong{color:#e7f2fb;font-size:11px}.status-badges{display:flex;align-items:flex-end;flex-direction:column;gap:3px}.status-badges b{padding:3px 6px;color:#b3e5fc;background:rgba(3,169,244,.12);border-radius:999px;font-size:8px}.status-badges i{font-size:8px;font-style:normal}.status-badges .complete{color:#69f0ae}.status-badges .fallback{color:#ffd180}.agent-summary p{margin:9px 0 0;padding:10px;color:#d7e8f5;background:rgba(3,169,244,.06);border-radius:6px;font-size:11px;line-height:1.7}
 </style>

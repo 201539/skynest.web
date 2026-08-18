@@ -140,7 +140,9 @@ const timeZone = computed(() => (
   || props.route?.planning_context?.time_zone
   || null
 ))
-const formula = computed(() => trace.value?.formula || null)
+const formula = computed(() => trace.value?.formula
+  ? '单段航线成本 = 飞行距离 ×（距离权重 + 风险放大系数 × 各项标准化风险与权重乘积之和）+ 机动权重 × 等效转弯距离'
+  : null)
 const selectionReason = computed(() => (
   trace.value?.selection_reason?.summary
   || '该航线生成于选择明细上线前；重新规划后可查看每项 Cost 对本航线的真实贡献。'

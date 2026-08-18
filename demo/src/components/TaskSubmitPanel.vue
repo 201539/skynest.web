@@ -90,21 +90,6 @@
           <span v-for="reason in agentAnalysis.manual_review_reasons" :key="reason">{{ reason }}</span>
         </div>
 
-        <div class="agent-confirmation">
-          <span>
-            {{ analysisChanged
-              ? '表单内容已修改，请按最终内容重新确认。'
-              : agentAnalysis.confirmation_prompt }}
-          </span>
-          <button
-            type="button"
-            :class="{ confirmed: agentConfirmed }"
-            :aria-pressed="agentConfirmed"
-            @click="confirmAgentResult"
-          >
-            {{ agentConfirmed ? '✓ 已人工确认' : '确认解析无误' }}
-          </button>
-        </div>
       </section>
 
       <div class="form-grid">
@@ -189,10 +174,22 @@
           </select>
         </label>
 
-        <label class="form-field">
+        <div class="form-field full-span">
           <span>特殊要求 <small>选填</small></span>
-          <input v-model.trim="specialRequirementsText" type="text" placeholder="防震、冷链；用逗号分隔" @input="markAnalysisChanged" />
-        </label>
+          <div class="requirement-options" role="group" aria-label="特殊运输功能">
+            <button type="button" :class="{ selected: !selectedRequirements.length }" @click="clearRequirements">无</button>
+            <button
+              v-for="option in requirementOptions"
+              :key="option.value"
+              type="button"
+              :class="{ selected: selectedRequirements.includes(option.label) }"
+              @click="toggleRequirement(option.label)"
+            >{{ option.label }}</button>
+            <button type="button" :class="{ selected: otherRequirementEnabled }" @click="toggleOtherRequirement">其他</button>
+          </div>
+          <input v-if="otherRequirementEnabled" v-model.trim="otherRequirementText" type="text" placeholder="请填写其他运输要求" @input="markAnalysisChanged" />
+          <small>可多选；“无”与其他选项互斥。航程由路线自动计算，抗风能力由系统结合天气和机型数据核验。</small>
+        </div>
       </div>
 
       <div v-if="requiresManualReview" class="risk-notice" role="status">
@@ -204,6 +201,9 @@
 
       <div class="form-actions">
         <button type="button" class="secondary-btn" :disabled="submitting" @click="resetForm">{{ editingRejectedTaskId ? '恢复原内容' : '清空' }}</button>
+        <button type="button" class="confirmation-btn" :class="{ confirmed: agentConfirmed }" :disabled="submitting" @click="confirmAgentResult">
+          {{ agentConfirmed ? '✓ 已确认任务信息' : '确认任务信息' }}
+        </button>
         <button type="submit" class="primary-btn" :disabled="submitting">
           {{ submitting ? '提交中…' : editingRejectedTaskId ? '保存修改并重新提交' : '提交运输任务' }}
         </button>
@@ -351,6 +351,17 @@ function createEmptyForm(requester = {}) {
 const form = reactive(createEmptyForm(props.currentUser))
 const errors = reactive({})
 const specialRequirementsText = ref('')
+const otherRequirementText = ref('')
+const otherRequirementEnabled = ref(false)
+const requirementOptions = Object.freeze([
+  { value: 'shockproof', label: '防震' },
+  { value: 'waterproof', label: '防水' },
+  { value: 'leakproof', label: '防漏' },
+  { value: 'cold_chain', label: '冷链' },
+  { value: 'temperature_controlled', label: '恒温' },
+  { value: 'low_noise', label: '静音要求' },
+])
+const selectedRequirements = computed(() => specialRequirementsText.value.split(/[，,、]/).map((value) => value.trim()).filter(Boolean))
 const submitting = ref(false)
 const parsing = ref(false)
 const formError = ref('')
@@ -490,18 +501,37 @@ function clearParseFeedback() {
 }
 
 function markAnalysisChanged() {
-  if (!agentAnalysis.value) return
   analysisChanged.value = true
   agentConfirmed.value = false
   agentConfirmedAt.value = null
 }
 
 function confirmAgentResult() {
-  if (!agentAnalysis.value) return
   agentConfirmed.value = true
   agentConfirmedAt.value = new Date().toISOString()
   analysisChanged.value = false
   emit('notify', 'Agent解析结果已由申请人确认')
+}
+
+function clearRequirements() {
+  specialRequirementsText.value = ''
+  otherRequirementEnabled.value = false
+  otherRequirementText.value = ''
+  markAnalysisChanged()
+}
+
+function toggleRequirement(label) {
+  const values = new Set(selectedRequirements.value)
+  if (values.has(label)) values.delete(label)
+  else values.add(label)
+  specialRequirementsText.value = [...values].join('、')
+  markAnalysisChanged()
+}
+
+function toggleOtherRequirement() {
+  otherRequirementEnabled.value = !otherRequirementEnabled.value
+  if (!otherRequirementEnabled.value) otherRequirementText.value = ''
+  markAnalysisChanged()
 }
 
 function normalizeDeadlineForInput(value) {
@@ -658,10 +688,12 @@ async function parseTaskInput() {
 }
 
 function normalizeRequirements() {
-  return specialRequirementsText.value
+  const values = specialRequirementsText.value
     .split(/[，,、]/)
     .map((value) => value.trim())
     .filter(Boolean)
+  if (otherRequirementEnabled.value && otherRequirementText.value.trim()) values.push(`其他：${otherRequirementText.value.trim()}`)
+  return [...new Set(values)]
 }
 
 function fillFormFromTask(task) {
@@ -740,14 +772,12 @@ function validateForm() {
     if (findExactBuilding(form.destination) && !destinationAccessPoint.value) errors.destination = '终点建筑对应的收货L3节点尚未确认'
   }
 
-  if (agentAnalysis.value && !agentConfirmed.value) {
-    formError.value = confidenceTone.value === 'low'
-      ? 'Agent对此需求的置信度较低，请补充信息并人工确认解析结果。'
-      : '请先人工确认Agent解析结果，再提交运输任务。'
+  if (!agentConfirmed.value) {
+    formError.value = '请再次核对任务信息，点击“确认任务信息”后方可提交运输任务。'
   }
 
   const fieldsValid = Object.keys(errors).length === 0
-  const valid = fieldsValid && (!agentAnalysis.value || agentConfirmed.value)
+  const valid = fieldsValid && agentConfirmed.value
   if (!fieldsValid) formError.value = '请补全标记为必填的任务信息。'
   return valid
 }
@@ -762,6 +792,7 @@ async function submitTask() {
     requester: { ...form.requester },
     weight_kg: Number(form.weight_kg),
     special_requirements: normalizeRequirements(),
+    requester_confirmed: agentConfirmed.value,
     safety_level: requiresManualReview.value ? 'high' : 'normal',
     needs_manual_review: requiresManualReview.value,
     missing_fields: [],
@@ -815,6 +846,8 @@ function resetForm(options = {}) {
   originAccessLoading.value = false
   destinationAccessLoading.value = false
   specialRequirementsText.value = ''
+  otherRequirementText.value = ''
+  otherRequirementEnabled.value = false
   clearErrors()
   clearParseFeedback()
   if (!options.preserveResult) lastSubmitted.value = null
@@ -1227,6 +1260,10 @@ input[type='datetime-local'] { color-scheme: dark; }
 
 .risk-notice span { color: #d9c893; }
 
+.requirement-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.requirement-options button { padding: 5px 9px; color: #b0c8da; background: rgba(255,255,255,.05); border: 1px solid rgba(144,202,249,.18); border-radius: 999px; cursor: pointer; }
+.requirement-options button.selected { color: #062037; background: #81d4fa; border-color: #b3e5fc; font-weight: 700; }
+
 .form-error {
   margin-top: 10px;
   color: #ffab91;
@@ -1254,6 +1291,9 @@ input[type='datetime-local'] { color-scheme: dark; }
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.14);
 }
+
+.confirmation-btn { color: #b3e5fc; background: rgba(3,169,244,.1); border: 1px solid rgba(79,195,247,.28); }
+.confirmation-btn.confirmed { color: #072a1a; background: #69f0ae; border-color: #b9f6ca; font-weight: 700; }
 
 .primary-btn {
   color: #061426;

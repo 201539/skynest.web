@@ -83,6 +83,7 @@ function validateTask(values = {}) {
     agentAnalysis: values.agent_analysis && typeof values.agent_analysis === 'object'
       ? values.agent_analysis
       : null,
+    requesterConfirmed: values.requester_confirmed === true,
   }
 }
 
@@ -119,6 +120,9 @@ function normalizeTask(row) {
     needs_manual_review: Boolean(row.needs_manual_review),
     missing_fields: row.missing_fields || [],
     agent_analysis: row.agent_analysis || null,
+    requester_confirmed_at: row.requester_confirmed_at || null,
+    requester_confirmed_by: row.requester_confirmed_by || null,
+    recommended_drone_id: row.recommended_drone_id == null ? null : Number(row.recommended_drone_id),
     risk_score: row.risk_score == null ? null : Number(row.risk_score),
     status: frontendStatus,
     database_status: row.status,
@@ -269,11 +273,14 @@ async function createTask(values = {}, options = {}) {
         origin, destination, item_category, weight_kg, deadline, priority,
         safety_level, special_requirements, recommended_vehicle_class,
         candidate_node_ids, needs_manual_review, missing_fields,
-        status, input_text, requester, agent_analysis, item_description
+        status, input_text, requester, agent_analysis, item_description,
+        requester_confirmed_at, requester_confirmed_by
       ) VALUES (
         $1, $2, $3, $4, $5::timestamptz AT TIME ZONE $16, $6,
         $7, $8::jsonb, $9, $10::jsonb, $11, $12::jsonb,
-        'submitted', $13, $14::jsonb, $15::jsonb, $17
+        'submitted', $13, $14::jsonb, $15::jsonb, $17,
+        CASE WHEN $18::boolean THEN now() ELSE NULL END,
+        CASE WHEN $18::boolean THEN $19 ELSE NULL END
       )
       RETURNING *
     `,
@@ -295,6 +302,8 @@ async function createTask(values = {}, options = {}) {
       task.agentAnalysis ? JSON.stringify(task.agentAnalysis) : null,
       TIME_ZONE,
       task.itemDescription,
+      task.requesterConfirmed,
+      task.requester?.name || task.requester?.id || '师生用户',
     ]
   )
     const saved = normalizeTask(result.rows[0])
@@ -376,6 +385,8 @@ async function resubmitRejectedTask(taskId, values = {}, options = {}) {
           input_text = $14,
           agent_analysis = $15::jsonb,
           item_description = $17,
+          requester_confirmed_at = CASE WHEN $18::boolean THEN now() ELSE NULL END,
+          requester_confirmed_by = CASE WHEN $18::boolean THEN $19 ELSE NULL END,
           status = 'submitted',
           assigned_drone_id = NULL,
           assigned_node_id = NULL,
@@ -401,6 +412,8 @@ async function resubmitRejectedTask(taskId, values = {}, options = {}) {
         task.agentAnalysis ? JSON.stringify(task.agentAnalysis) : null,
         TIME_ZONE,
         task.itemDescription,
+        task.requesterConfirmed,
+        task.requester?.name || task.requester?.id || '师生用户',
       ]
     )
     const saved = normalizeTask(result.rows[0])
@@ -626,6 +639,7 @@ async function deleteTask(taskId, options = {}) {
     await client.query('DELETE FROM runtime.operation_events WHERE task_id = $1', [id])
     await client.query('DELETE FROM runtime.approvals WHERE task_id = $1', [id])
     await client.query('DELETE FROM runtime.audit_events WHERE task_id = $1', [id])
+    await client.query('DELETE FROM runtime.task_drone_candidates WHERE task_id = $1', [id])
     await client.query('DELETE FROM runtime.routes WHERE task_id = $1', [id])
     await client.query('DELETE FROM runtime.tasks WHERE task_id = $1', [id])
 
